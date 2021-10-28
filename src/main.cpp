@@ -3,11 +3,11 @@
  */
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
-#include "GPS_Air530.h" // Enable this for board version 1.0 and 1.0_1
-//#include "GPS_Air530Z.h" // Enable this for board version 1.1
+//#include "GPS_Air530.h" // Enable this for board version 1.0 and 1.0_1
+#include "GPS_Air530Z.h" // Enable this for board version 1.1
 #include "HT_SSD1306Wire.h"
 
-//#define DEBUG // Enable/Disable debug output over the serial console
+#define DEBUG // Enable/Disable debug output over the serial console
 
 extern SSD1306Wire            display;    // Defined in LoRaWan_APP.cpp
 extern uint8_t                isDispayOn; // Defined in LoRaWan_APP.cpp
@@ -27,13 +27,18 @@ Air530ZClass                  GPS;
 // Enable this to activate the auto sleep on no vibration function for the cases when the device is left stationary indoors and GPS generates fake movement so it can't go to sleep 
 //#define VIBR_AUTOSLEEP_TIMEOUT 300000
 
-#define GPS_READ_RATE         1000      // How often to read GPS (in ms)
-#define MIN_DIST              25        // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
-#define MAX_GPS_WAIT          660000    // Max time to wait for GPS before going to sleep (in ms)
-#define AUTO_SLEEP_TIMER      300000    // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature. 
-#define MENU_IDLE_TIMEOUT     30000     // Auto exit the menu if no button pressed in this amount of ms
+#define GPS_READ_RATE         1000 // How often to read GPS (in ms)
+#define MIN_DIST              20   // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
+//#define MAX_GPS_WAIT          (60 * 60 * 1000) // Max time to wait for GPS before going to sleep (in ms)
+#define BATTERY_IDLE_V        3.5  // Minimum battery discharge level (sleep on low battery)
+#define BATTERY_ACTIVE_V      3.9 // Minimum volts to go active
+#define MAX_QUIET_TIME_MS     (5 * 60 * 1000) // Send a report at least every n milliseconds, regardless of movement
+#define STILL_DISPLAY_OFF     (6 * 60 * 1000) // Turn off display if standing still for x ms
+#define MENU_IDLE_TIMEOUT     (30 * 1000) // Auto exit the menu if no button pressed in this amount of ms
 #define VBAT_CORRECTION       1.004     // Edit this for calibrating your battery voltage
-//#define CAYENNELPP_FORMAT   
+//#define AUTO_SLEEP_TIMER      (60 * 60 * 1000) // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature. 
+
+//#define CAYENNELPP_FORMAT
 
 /*
    set LoraWan_RGB to Active,the RGB active in loraWan
@@ -45,10 +50,9 @@ Air530ZClass                  GPS;
 */
 
 /* OTAA para*/
-
-uint8_t devEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint8_t appEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint8_t appKey[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+uint8_t devEui[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF }; // Dummy!  Will be overwritten by Chip ID
+uint8_t appEui[] = { 0x60, 0x81, 0xF9, 0xBF, 0x90, 0x8E, 0x2E, 0xA0 }; // Shared between all units
+uint8_t appKey[] = { 0xCE, 0x32, 0x04, 0xB8, 0x16, 0x68, 0x79, 0x91, 0xBC, 0x91, 0xD8, 0xAD, 0x30, 0xAF, 0x3F, 0x55 };
 
 /* ABP para*/
 uint8_t nwkSKey[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -68,15 +72,15 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 /*LoraWan Class, Class A and Class C are supported*/
 DeviceClass_t  loraWanClass = LORAWAN_CLASS;
 
-/*the application data transmission duty cycle.  value in [ms].*/
-/* Start with non-zero value, for the first transmission with previously stored JOIN,
- * but it will be changed later depending on the mode */
+/* Application data transmission duty cycle.  value in [ms].
+   Start with non-zero value, for the first transmission with previously stored JOIN,
+   but it will be changed later depending on the mode */
 uint32_t appTxDutyCycle = 1000;
 
-/*OTAA or ABP*/
+/* OTAA or ABP */
 bool overTheAirActivation = LORAWAN_NETMODE;
 
-/*ADR enable*/
+/* ADR enable */
 bool loraWanAdr = LORAWAN_ADR;
 
 /* set LORAWAN_Net_Reserve ON, the node could save the network info to flash, when node reset not need to join again */
@@ -85,11 +89,13 @@ bool keepNet = LORAWAN_NET_RESERVE;
 /* Indicates if the node is sending confirmed or unconfirmed messages */
 bool isTxConfirmed = LORAWAN_UPLINKMODE;
 
-#define APP_PORT_DEFAULT 2
-#define APP_PORT_LASTLOC 3
+#define APP_PORT_DEFAULT 2  // Mapper
+#define APP_PORT_LASTLOC 3  // Tracker (Last location only)
+#define APP_PORT_NOGPS   4  // No GPS Fix / ping only
 
 /* Application port */
 uint8_t appPort = APP_PORT_DEFAULT;
+
 /*!
   Number of trials to transmit the frame, if the LoRaMAC layer did not
   receive an acknowledgment. The MAC performs a datarate adaptation,
@@ -184,21 +190,16 @@ bool      gpsTimerSet             = false;
 #ifdef VIBR_AUTOSLEEP_TIMEOUT
 uint32_t  lastVibrEvent           = 0;
 #endif
-
-bool      trackerMode             = false;
-bool      sendLastLoc             = false;
-bool      lastLocSet              = false;
-uint32_t  last_lat                = 0;
-uint32_t  last_lon                = 0;
 double    last_send_lat           = 0;
 double    last_send_lon           = 0;
 uint32_t  min_dist_moved          = MIN_DIST;
+uint32_t  last_send_time_ms       = 0;
 uint32_t  dist_moved              = UINT32_MAX;
 bool      nonstopMode             = false;
 
-#define MENU_CNT 8
+#define MENU_CNT 7
 
-char* menu[MENU_CNT] = {"Screen OFF", "Sleep", "Send now", "Faster Upd", "Slower Upd", "Tracker mode", "Nonstop mode", "Debug Info"}; //"Reset GPS", "Bat V/%"
+char* menu[MENU_CNT] = {"Screen OFF", "Sleep", "Send now", "Faster Upd", "Slower Upd", "Nonstop", "Debug Info"}; //"Reset GPS", "Bat V/%"
 
 enum eMenuEntries
 {
@@ -207,7 +208,6 @@ enum eMenuEntries
   SEND_NOW,
   FASTER_UPD,
   SLOWER_UPD,
-  TRACKER_MODE,
   NONSTOP_MODE,
   DEBUG_INFO
   //RESET_GPS,
@@ -542,7 +542,7 @@ void displayDebugInfo()
   index = sprintf(str,"%s: %u DR: %i", "LoRaJoined", IsLoRaMacNetworkJoined, loraDataRate());
   str[index] = 0;
   display.drawString(0, 30, str);
-  index = sprintf(str,"%s: %i", "Tracker mode", trackerMode);
+  index = sprintf(str,"%s: %i", "Unused", 0);
   str[index] = 0;
   display.drawString(0, 40, str);
   index = sprintf(str,"%s: %i", "Nonstop mode", nonstopMode);
@@ -621,13 +621,6 @@ void cycleGPS()
   if (GPS.location.age() < GPS_READ_RATE)
   {
     dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, GPS.location.lat(), GPS.location.lng());
-
-    if (trackerMode) // store the last lat/long
-    {
-      last_lat    = ((GPS.location.lat() + 90) / 180.0) * 16777215;
-      last_lon    = ((GPS.location.lng() + 180) / 360.0) * 16777215;
-      lastLocSet  = true;
-    }
   }
 }
 
@@ -658,7 +651,6 @@ void switchModeToSleep()
   #endif
   stopGPS();
   Radio.Sleep(); // Not sure this is needed. It is called by LoRaAPP.cpp in various places after TX done or timeout. Most probably in 99% of the cases it will be already called when we get here. 
-  sendLastLoc = trackerMode; // After wake up, if tracker mode enabled - send the last known location before waiting for GPS
   #ifdef VIBR_SENSOR
   setVibrAutoWakeUp();
   #endif
@@ -687,14 +679,7 @@ void switchModeOutOfSleep()
   }
   #endif
   startGPS();
-  if (sendLastLoc) // If we are in tracker mode and we have to send last known location on wake up - go to SEND immediately 
-  {
-    deviceState = DEVICE_STATE_SEND;
-  }
-  else
-  {
-    deviceState = DEVICE_STATE_SLEEP;
-  }
+  deviceState = DEVICE_STATE_SLEEP;
   loopingInSend = false;
   #ifdef VIBR_AUTOSLEEP_TIMEOUT
   lastVibrEvent = millis(); // reset variable to prevent auto sleep immediately after wake up
@@ -743,9 +728,10 @@ static void OnGPSCycleTimerEvent()
     cycleGPS();  
 
     // if we moved more than min_dist_moved, then send
-    if (dist_moved >= min_dist_moved)
+    if ((millis() - last_send_time_ms) > MAX_QUIET_TIME_MS || dist_moved >= min_dist_moved)
     {
       deviceState = DEVICE_STATE_SEND;
+      last_send_time_ms = millis();
     }
   }
   gpsTimerSet = false;
@@ -862,7 +848,7 @@ bool prepareTxFrame(uint8_t port)
       break;
 
     case APP_PORT_LASTLOC:
-
+    /*  Unused Tracker
       puc = (unsigned char *)(&last_lat);
       appData[appDataSize++] = puc[2];
       appData[appDataSize++] = puc[1];
@@ -872,7 +858,7 @@ bool prepareTxFrame(uint8_t port)
       appData[appDataSize++] = puc[2];
       appData[appDataSize++] = puc[1];
       appData[appDataSize++] = puc[0];
-
+     */
       ret = true;
       break;      
   }
@@ -1013,11 +999,6 @@ void executeMenu(void)
       menuMode = false;
       break;
 
-    case TRACKER_MODE:
-      trackerMode = !trackerMode;
-      menuMode = false;
-      break;
-
     case NONSTOP_MODE:
       nonstopMode = !nonstopMode;
       menuMode = false;
@@ -1119,6 +1100,8 @@ void setup()
 
   Serial.begin(115200);  
 
+  LoRaWAN.generateDeveuiByChipID();  // Overwrite devEui with chip-unique value
+  
   #if(AT_SUPPORT)
   enableAt();
   #endif
@@ -1126,7 +1109,8 @@ void setup()
   // Display branding image. If we don't want that - the following 2 lines can be removed  
   display.init(); // displayMcuInit() will init the display, but if we want to show our logo before that, we need to init ourselves.   
   isDispayOn = 1;
-  displayLogoAndMsg("MAPPER", 4000);
+
+  displayLogoAndMsg("GPSTIMER", 1000);
 
   LoRaWAN.displayMcuInit(); // This inits and turns on the display  
   
@@ -1186,6 +1170,7 @@ void loop()
       }
       else
       {
+        /*  Unused Tracker
         if (sendLastLoc && lastLocSet)
         {
           appPort = APP_PORT_LASTLOC;
@@ -1196,7 +1181,7 @@ void loop()
           sendLastLoc = false;
           appPort = APP_PORT_DEFAULT;
         }
-        
+        */
         if (!loopingInSend) // We are just getting here from some other state
         {
           loopingInSend = true; // We may be staying here for a while, but we want to reset the below variables only once when we enter.
