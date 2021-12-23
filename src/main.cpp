@@ -1,5 +1,6 @@
 /* Based on the CubeCell GPS example from libraries\LoRa\examples\LoRaWAN\LoRaWAN_Sensors\LoRaWan_OnBoardGPS_Air530\LoRaWan_OnBoardGPS_Air530.ino
  * and on Jas Williams version from https://github.com/jas-williams/CubeCell-Helium-Mapper.git  
+ * with GPS Distance and improvements from https://github.com/hkicko/CubeCell-GPS-Helium-Mapper
  */
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
@@ -28,16 +29,15 @@ Air530ZClass                  GPS;
 //#define VIBR_AUTOSLEEP_TIMEOUT 300000
 
 #define GPS_READ_RATE         1000 // How often to read GPS (in ms)
-#define MIN_DIST              20   // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
+#define MIN_DIST              25   // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
 //#define MAX_GPS_WAIT          (60 * 60 * 1000) // Max time to wait for GPS before going to sleep (in ms)
-#define BATTERY_IDLE_V        3.5  // Minimum battery discharge level (sleep on low battery)
-#define BATTERY_ACTIVE_V      3.9 // Minimum volts to go active
+#define BATTERY_IDLE_MV       3500  // Minimum battery discharge level (sleep on low battery) (millivolts)
+#define BATTERY_ACTIVE_DMV      50  // Minimum step up in millivolts to go active
 #define MAX_QUIET_TIME_MS     (5 * 60 * 1000) // Send a report at least every n milliseconds, regardless of movement
-#define STILL_DISPLAY_OFF     (6 * 60 * 1000) // Turn off display if standing still for x ms
+#define STILL_DISPLAY_OFF     (8 * 60 * 1000) // Turn off display if standing still for x ms
 #define MENU_IDLE_TIMEOUT     (30 * 1000) // Auto exit the menu if no button pressed in this amount of ms
 #define VBAT_CORRECTION       1.004     // Edit this for calibrating your battery voltage
 //#define AUTO_SLEEP_TIMER      (60 * 60 * 1000) // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature. 
-
 //#define CAYENNELPP_FORMAT
 
 /*
@@ -279,8 +279,18 @@ void displayGPSInfo()
    
   index = sprintf(str, "hdop: %d.%d", (int)GPS.hdop.hdop(), fracPart(GPS.hdop.hdop(), 2));
   str[index] = 0;
-  display.drawString(0, 32, str); 
- 
+  display.drawString(0, 32, str);
+
+  {
+    uint16_t batteryVoltage;
+    batteryVoltage = getBatteryVoltage();
+    float_t batV = ((float_t)batteryVoltage * VBAT_CORRECTION) / 1000;
+    index = sprintf(str, "bat: %d.%02dV", (int)batV, fracPart(batV, 2));
+    str[index] = 0;
+    display.drawString(60, 16, str);
+  }
+
+/*
   index = sprintf(str, "lat :  %d.%d", (int)GPS.location.lat(), fracPart(GPS.location.lat(), 4));
   str[index] = 0;
   display.drawString(60, 16, str);   
@@ -288,6 +298,7 @@ void displayGPSInfo()
   index = sprintf(str, "lon: %d.%d", (int)GPS.location.lng(), fracPart(GPS.location.lng(), 4));
   str[index] = 0;
   display.drawString(60, 32, str);
+  */
 
   index = sprintf(str, "speed: %d.%d km/h", (int)GPS.speed.kmph(), fracPart(GPS.speed.kmph(), 2));
   str[index] = 0;
@@ -684,9 +695,7 @@ void switchModeOutOfSleep()
   #ifdef VIBR_AUTOSLEEP_TIMEOUT
   lastVibrEvent = millis(); // reset variable to prevent auto sleep immediately after wake up
   #endif
-  #ifdef AUTO_SLEEP_TIMER
   lastSend = millis(); // reset variable to prevent auto sleep immediately after wake up
-  #endif
 }
 
 void switchScrenOffMode()
@@ -1101,6 +1110,9 @@ void setup()
   Serial.begin(115200);  
 
   LoRaWAN.generateDeveuiByChipID();  // Overwrite devEui with chip-unique value
+  #if(STAGING_CONSOLE)
+  devEui[0] = 0xBB;
+  #endif
   
   #if(AT_SUPPORT)
   enableAt();
@@ -1203,9 +1215,7 @@ void loop()
                 LoRaWAN.displaySending();
               }
               LoRaWAN.send();
-              #ifdef AUTO_SLEEP_TIMER
               lastSend = millis();
-              #endif
             }
             // if (!screenOffMode)
             // {
