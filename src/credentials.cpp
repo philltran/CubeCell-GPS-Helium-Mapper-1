@@ -29,7 +29,7 @@ If you want to take the random Console values for a new device, and use them her
 in the Console, then click the arrows to expand the values with comma separators, then paste them below.
 */
 
-// The DevEUI will be generated automatically based on the device macaddr
+// The DevEUI will be generated automatically based on the device macaddr, if these are all zero
 uint8_t devEui[8] = {
         0, 0, 0, 0, 0, 0, 0, 0
     }; 

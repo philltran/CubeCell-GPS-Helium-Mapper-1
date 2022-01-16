@@ -99,6 +99,10 @@ static TimerEvent_t MenuIdleTimer;
 float min_dist_moved = MIN_DIST_M;
 uint32_t max_time_ms = MAX_TIME_S * 1000;
 
+double deadzone_lat = DEADZONE_LAT;
+double deadzone_lon = DEADZONE_LON;
+double deadzone_radius_m = DEADZONE_RADIUS_M;
+
 boolean in_menu = false;
 boolean justSendNow = false;
 
@@ -159,9 +163,9 @@ void printGPSInfo(void) {
   } else {
     Serial.print(" INVALID");
   }
-  // Serial.println();
+  Serial.println();
 
-#if 0
+#if 1
   Serial.print(" LAT: ");
   Serial.print(GPS.location.lat(), 6);
   Serial.print(", LON: ");
@@ -317,6 +321,7 @@ void update_gps() {
       firstfix = false;
       snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix - gps_start_time) / 1000);
       screen_print(buffer);
+      printGPSInfo();
     }
     GPS.location.lat();  // Reset the isUpdated
   }
@@ -452,10 +457,16 @@ void menu_gps_passthrough(void) {
   gps_passthrough();
   // Does not return!
 }
+void menu_deadzone_here(void) {
+  if (GPS.location.isValid()) {
+    deadzone_lat = GPS.location.lat();
+    deadzone_lon = GPS.location.lng();
+  }
+}
 
 struct menu_item menu[] = {
-    {"Send Now", menu_send_now},  {"Power Off", menu_power_off}, {"Distance +10", menu_distance_plus}, {"Distance -10", menu_distance_minus},
-    {"Time +60", menu_time_plus}, {"Time -60", menu_time_minus}, {"USB GPS", menu_gps_passthrough},
+    {"Send Now", menu_send_now},  {"Power Off", menu_power_off}, {"Distance +10", menu_distance_plus},  {"Distance -10", menu_distance_minus},
+    {"Time +60", menu_time_plus}, {"Time -60", menu_time_minus}, {"Deadzone Here", menu_deadzone_here}, {"USB GPS", menu_gps_passthrough},
 };
 #define MENU_ENTRIES (sizeof(menu) / sizeof(menu[0]))
 
@@ -618,7 +629,7 @@ void setup() {
   display.init();  // displayMcuInit() will init the display, but if we want to
                    // show our logo before that, we need to init ourselves.
   isDisplayOn = 1;
-  displayLogoAndMsg("MaxP Map", 100);
+  displayLogoAndMsg(APP_VERSION, 100);
 
   start_gps();  // GPS takes the longest to settle.
 
@@ -636,6 +647,7 @@ void setup() {
   attachInterrupt(USER_KEY, userKeyIRQ, BOTH);
 
   screen_setup();
+  screen_print(APP_VERSION "\n");
 
   TimerInit(&BatteryUpdateTimer, onBatteryUpdateTimer);
   onBatteryUpdateTimer();
@@ -659,14 +671,25 @@ void setup() {
 #endif
 
 boolean send_mapper_uplink(void) {
+  boolean in_deadzone;
   uint32_t now = millis();
 
   if (!GPS.location.isValid())
     return false;
 
-  double dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, GPS.location.lat(), GPS.location.lng());
+  double lat = GPS.location.lat();
+  double lon = GPS.location.lng();
 
-  Serial.printf("[%ds, %dm]\n", (now - last_send_ms) / 1000, (int32_t)dist_moved);
+  double dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, lat, lon);
+  double deadzone_dist = GPS.distanceBetween(deadzone_lat, deadzone_lon, lat, lon);
+
+  in_deadzone = (deadzone_dist <= deadzone_radius_m);
+
+  Serial.printf("[%ds, %dm, %c]\n", (now - last_send_ms) / 1000, (int32_t)dist_moved, in_deadzone ? 'D' : '-');
+
+  if (in_deadzone && !justSendNow)
+    return false;
+
   char because = '?';
   if (justSendNow) {
     justSendNow = false;
@@ -723,7 +746,7 @@ void loop() {
       break;
     }
     case DEVICE_STATE_JOIN: {
-      Serial.print("[JOIN] ");
+      //Serial.print("[JOIN] ");
       LoRaWAN.displayJoining();
       LoRaWAN.join();
       break;
