@@ -731,7 +731,7 @@ void loop() {
     case DEVICE_STATE_SEND: {
       if (first_send) {
         first_send = false;
-        snprintf(buffer, sizeof(buffer), "Joined @ %d sec\n", (millis() - lora_start_time) / 1000);
+        snprintf(buffer, sizeof(buffer), "Joined Helium: %d sec\n", (millis() - lora_start_time) / 1000);
         screen_print(buffer);
         justSendNow = true;
       }
@@ -741,7 +741,6 @@ void loop() {
     }
     case DEVICE_STATE_CYCLE: {
       // Serial.print("[CYCLE] ");
-
       LoRaWAN.cycle(appTxDutyCycle);  // Sets a timer to check state
       deviceState = DEVICE_STATE_SLEEP;
       break;
