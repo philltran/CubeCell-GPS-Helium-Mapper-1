@@ -1,97 +1,72 @@
-/* Based on the CubeCell GPS example from libraries\LoRa\examples\LoRaWAN\LoRaWAN_Sensors\LoRaWan_OnBoardGPS_Air530\LoRaWan_OnBoardGPS_Air530.ino
- * and on Jas Williams version from https://github.com/jas-williams/CubeCell-Helium-Mapper.git  
- * with GPS Distance and improvements from https://github.com/hkicko/CubeCell-GPS-Helium-Mapper
- */
-#include "LoRaWan_APP.h"
-#include "Arduino.h"
-//#include "GPS_Air530.h" // Enable this for board version 1.0 and 1.0_1
-#include "GPS_Air530Z.h" // Enable this for board version 1.1
-#include "HT_SSD1306Wire.h"
-
-#define DEBUG // Enable/Disable debug output over the serial console
-
-extern SSD1306Wire            display;    // Defined in LoRaWan_APP.cpp
-extern uint8_t                isDispayOn; // Defined in LoRaWan_APP.cpp
-#ifdef GPS_Air530_H
-Air530Class                   GPS;
-#endif
-#ifdef GPS_Air530Z_H
-Air530ZClass                  GPS;
-#endif
-
-// Commend out/uncomment this line to disable/enable the auto sleep/wake up by vibration sensor feature
-//#define VIBR_SENSOR           GPIO5     // Change the pin where the sensor is connected if different
-// Comment out/uncomment this line to disable/enable the functionality  where the vibration sensor wakes the device from "deep" sleep (VIBR_SENSOR must be enabled)
-//#define VIBR_WAKE_FROM_SLEEP
-// If put to sleeep from the menu, this will disable the wake up by vibration and only allow it to work when auto sleep was activated in some way (like stopped for too long)
-//#define MENU_SLEEP_DISABLE_VIBR_WAKEUP
-// Enable this to activate the auto sleep on no vibration function for the cases when the device is left stationary indoors and GPS generates fake movement so it can't go to sleep 
-//#define VIBR_AUTOSLEEP_TIMEOUT 300000
-
-#define GPS_READ_RATE         1000 // How often to read GPS (in ms)
-#define MIN_DIST              25   // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
-//#define MAX_GPS_WAIT          (60 * 60 * 1000) // Max time to wait for GPS before going to sleep (in ms)
-#define BATTERY_IDLE_MV       3500  // Minimum battery discharge level (sleep on low battery) (millivolts)
-#define BATTERY_ACTIVE_DMV      50  // Minimum step up in millivolts to go active
-#define MAX_QUIET_TIME_MS     (5 * 60 * 1000) // Send a report at least every n milliseconds, regardless of movement
-#define STILL_DISPLAY_OFF     (8 * 60 * 1000) // Turn off display if standing still for x ms
-#define MENU_IDLE_TIMEOUT     (30 * 1000) // Auto exit the menu if no button pressed in this amount of ms
-#define VBAT_CORRECTION       1.004     // Edit this for calibrating your battery voltage
-//#define AUTO_SLEEP_TIMER      (60 * 60 * 1000) // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature. 
-//#define CAYENNELPP_FORMAT
-
 /*
-   set LoraWan_RGB to Active,the RGB active in loraWan
-   RGB red means sending;
-   RGB purple means joined done;
-   RGB blue means RxWindow1;
-   RGB yellow means RxWindow2;
-   RGB green means received done;
-*/
+ * Max-Plastix Mapper build for
+ * Heltec CubeCell GPS-6502 HTCC-AB02S
+ *
+ * Based on the CubeCell GPS example from
+ * libraries\LoRa\examples\LoRaWAN\LoRaWAN_Sensors\LoRaWan_OnBoardGPS_Air530\LoRaWan_OnBoardGPS_Air530.ino
+ * and on Jas Williams version from
+ * https://github.com/jas-williams/CubeCell-Helium-Mapper.git with GPS Distance
+ * and improvements from https://github.com/hkicko/CubeCell-GPS-Helium-Mapper
+ *
+ * If the style and naming is inconsistent, it's because there were a lot of hands in this code.
+ */
+#include "Arduino.h"
+#include "GPS_Air530Z.h"      // Forsaken Heltec packed-in binary
+#include "HT_DisplayFonts.h"  // For Arial
+#include "HT_SSD1306Wire.h"
+#include "LoRaWan_APP.h"
+#include "TinyGPS++.h"  // Superior library
+#include "configuration.h"
+#include "credentials.h"
+#include "fonts.inc"  // for Custom_ArialMT_Plain_10
 
-/* OTAA para*/
-uint8_t devEui[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF }; // Dummy!  Will be overwritten by Chip ID
-uint8_t appEui[] = { 0x60, 0x81, 0xF9, 0xBF, 0x90, 0x8E, 0x2E, 0xA0 }; // Shared between all units
-uint8_t appKey[] = { 0xCE, 0x32, 0x04, 0xB8, 0x16, 0x68, 0x79, 0x91, 0xBC, 0x91, 0xD8, 0xAD, 0x30, 0xAF, 0x3F, 0x55 };
+#define DEBUG  // Enable/Disable debug output over the serial console
 
-/* ABP para*/
-uint8_t nwkSKey[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint8_t appSKey[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint32_t devAddr =  ( uint32_t )0x00000000;
+extern SSD1306Wire display;       // Defined in LoRaWan_APP.cpp
+extern HardwareSerial GPSSerial;  // Defined in GPSTrans.cpp
+Air530ZClass AirGPS;              // Just for Init
+TinyGPSPlus GPS;                  // Avoid the binary-only Heltec library
+boolean is_gps_started = false;
 
-#if defined( REGION_EU868 )
-/*LoraWan channelsmask, default channels 0-7*/ 
-uint16_t userChannelsMask[6] = { 0x00FF,0x0000,0x0000,0x0000,0x0000,0x0000 };
+extern uint8_t isDispayOn;      // [sic] Defined in LoRaWan_APP.cpp
+#define isDisplayOn isDispayOn  // Seriously.  It's wrong all over LoRaWan_APP.
+extern uint32_t UpLinkCounter;  // FCnt, Frame Count, Uplink Sequence Number
+
+#if defined(REGION_EU868)
+/*LoraWan channelsmask, default channels 0-7*/
+uint16_t userChannelsMask[6] = {0x00FF, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000};
 #else
-uint16_t userChannelsMask[6] = { 0xFF00,0x0000,0x0000,0x0000,0x0000,0x0000 };
+uint16_t userChannelsMask[6] = {0xFF00, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000};
 #endif
 
-/*LoraWan region, select in arduino IDE tools*/
-LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
+/* Unset APB stuff, but CubeCellLib.a requires that we declare them */
+uint8_t nwkSKey[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+uint8_t appSKey[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+uint32_t devAddr = 0;
 
-/*LoraWan Class, Class A and Class C are supported*/
-DeviceClass_t  loraWanClass = LORAWAN_CLASS;
+/* LoRaWAN Configuration.  Edit in platformio.ini */
+LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
+DeviceClass_t loraWanClass = LORAWAN_CLASS;
 
 /* Application data transmission duty cycle.  value in [ms].
-   Start with non-zero value, for the first transmission with previously stored JOIN,
-   but it will be changed later depending on the mode */
-uint32_t appTxDutyCycle = 1000;
+   Start with non-zero value, for the first transmission with previously stored
+   JOIN, but it will be changed later depending on the mode */
+uint32_t appTxDutyCycle = 1000 - 100;  // Must be a bit less than GPS update rate.
 
-/* OTAA or ABP */
+/* OTAA or ABP.  (Helium only supports OTAA) */
 bool overTheAirActivation = LORAWAN_NETMODE;
 
 /* ADR enable */
 bool loraWanAdr = LORAWAN_ADR;
 
-/* set LORAWAN_Net_Reserve ON, the node could save the network info to flash, when node reset not need to join again */
+/* set LORAWAN_Net_Reserve ON, the node could save the network info to flash,
+ * when node reset not need to join again */
 bool keepNet = LORAWAN_NET_RESERVE;
 
 /* Indicates if the node is sending confirmed or unconfirmed messages */
 bool isTxConfirmed = LORAWAN_UPLINKMODE;
 
 #define APP_PORT_DEFAULT 2  // Mapper
-#define APP_PORT_LASTLOC 3  // Tracker (Last location only)
-#define APP_PORT_NOGPS   4  // No GPS Fix / ping only
 
 /* Application port */
 uint8_t appPort = APP_PORT_DEFAULT;
@@ -117,233 +92,120 @@ uint8_t appPort = APP_PORT_DEFAULT;
 uint8_t confirmedNbTrials = 4;
 
 const uint8_t helium_logo_bmp[] PROGMEM = {
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0x03, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x1f,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0xe0, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0xff, 0xff,
-   0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0xff, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff,
-   0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0xc0, 0xff, 0xff, 0x03, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0xe0, 0xff, 0xff, 0x01, 0x7c, 0x80, 0x03, 0x00,
-   0x00, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff, 0x71,
-   0x7c, 0x80, 0x03, 0x00, 0x00, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0xf0, 0xff, 0x03, 0xf8, 0xf8, 0x80, 0x03, 0x00, 0x00, 0xe0, 0xe0, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0x00, 0xf8, 0xf8, 0x80, 0x03, 0x00,
-   0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f, 0x00, 0xf8,
-   0xf8, 0x81, 0x03, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0xf8, 0x3f, 0x00, 0x78, 0xfc, 0x81, 0x03, 0x00, 0x00, 0xe0, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0xfc, 0x1f, 0xf8, 0x07, 0xfc, 0x83, 0xf3, 0x01,
-   0xfe, 0xe0, 0xe0, 0x38, 0x70, 0x98, 0x1f, 0x3f, 0xfc, 0x1f, 0x9c, 0x07,
-   0xfe, 0x83, 0xff, 0x03, 0xff, 0xe1, 0xe0, 0x38, 0x70, 0x98, 0xbf, 0x7f,
-   0xfc, 0x1f, 0x06, 0x86, 0xff, 0x83, 0x0f, 0x87, 0x83, 0xe1, 0xe0, 0x38,
-   0x70, 0x78, 0xf8, 0x70, 0xfc, 0x1f, 0x02, 0x84, 0xff, 0x83, 0x07, 0x87,
-   0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x0f, 0x03, 0x84,
-   0xff, 0x83, 0x03, 0xc7, 0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60,
-   0xfc, 0x0f, 0x03, 0x84, 0xff, 0x83, 0x03, 0xc7, 0x01, 0xe7, 0xe0, 0x38,
-   0x70, 0x38, 0x70, 0x60, 0xfc, 0x0f, 0x02, 0x84, 0xff, 0x83, 0x03, 0xc7,
-   0xff, 0xe7, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x1f, 0x06, 0x86,
-   0xff, 0x83, 0x03, 0xc7, 0xff, 0xe7, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60,
-   0xfc, 0x07, 0x0e, 0x83, 0xff, 0x83, 0x03, 0xc7, 0x01, 0xe0, 0xe0, 0x38,
-   0x70, 0x38, 0x70, 0x60, 0xfc, 0x03, 0xfe, 0x81, 0xff, 0x83, 0x03, 0xc7,
-   0x01, 0xe0, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xf8, 0xe3, 0x61, 0xc0,
-   0xff, 0x81, 0x03, 0x87, 0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60,
-   0xf8, 0xf1, 0x01, 0xe0, 0xff, 0x81, 0x03, 0x87, 0x83, 0xe3, 0xe0, 0x70,
-   0x78, 0x38, 0x70, 0x60, 0xf8, 0xf1, 0x01, 0xf0, 0xff, 0x81, 0x03, 0x07,
-   0xff, 0xc1, 0xe3, 0xf0, 0x6f, 0x38, 0x70, 0x60, 0xf0, 0xf1, 0x01, 0xf8,
-   0xff, 0x80, 0x03, 0x07, 0x7e, 0x80, 0xe3, 0xe0, 0x67, 0x38, 0x70, 0x60,
-   0xf0, 0xe1, 0x08, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0xe0, 0x03, 0xf8, 0xff, 0x7f, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x07, 0xfc, 0xff,
-   0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0xc0, 0x0f, 0xff, 0xff, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0x1f, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
-   0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0xc0, 0xff, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x07, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0xff, 0x7f,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0xfc, 0xff, 0xff, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff,
+    0xff, 0xff, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0xff, 0x03, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xe0, 0xff, 0xff, 0x01, 0x7c, 0x80, 0x03, 0x00, 0x00, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff, 0x71, 0x7c, 0x80,
+    0x03, 0x00, 0x00, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff, 0x03, 0xf8, 0xf8, 0x80, 0x03, 0x00, 0x00, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xf8, 0xff, 0x00, 0xf8, 0xf8, 0x80, 0x03, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f, 0x00, 0xf8, 0xf8, 0x81, 0x03, 0x00, 0x00, 0xe0,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x3f, 0x00, 0x78, 0xfc, 0x81, 0x03, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0x1f, 0xf8, 0x07,
+    0xfc, 0x83, 0xf3, 0x01, 0xfe, 0xe0, 0xe0, 0x38, 0x70, 0x98, 0x1f, 0x3f, 0xfc, 0x1f, 0x9c, 0x07, 0xfe, 0x83, 0xff, 0x03, 0xff, 0xe1, 0xe0, 0x38, 0x70, 0x98,
+    0xbf, 0x7f, 0xfc, 0x1f, 0x06, 0x86, 0xff, 0x83, 0x0f, 0x87, 0x83, 0xe1, 0xe0, 0x38, 0x70, 0x78, 0xf8, 0x70, 0xfc, 0x1f, 0x02, 0x84, 0xff, 0x83, 0x07, 0x87,
+    0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x0f, 0x03, 0x84, 0xff, 0x83, 0x03, 0xc7, 0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x0f,
+    0x03, 0x84, 0xff, 0x83, 0x03, 0xc7, 0x01, 0xe7, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x0f, 0x02, 0x84, 0xff, 0x83, 0x03, 0xc7, 0xff, 0xe7, 0xe0, 0x38,
+    0x70, 0x38, 0x70, 0x60, 0xfc, 0x1f, 0x06, 0x86, 0xff, 0x83, 0x03, 0xc7, 0xff, 0xe7, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x07, 0x0e, 0x83, 0xff, 0x83,
+    0x03, 0xc7, 0x01, 0xe0, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xfc, 0x03, 0xfe, 0x81, 0xff, 0x83, 0x03, 0xc7, 0x01, 0xe0, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60,
+    0xf8, 0xe3, 0x61, 0xc0, 0xff, 0x81, 0x03, 0x87, 0x01, 0xe3, 0xe0, 0x38, 0x70, 0x38, 0x70, 0x60, 0xf8, 0xf1, 0x01, 0xe0, 0xff, 0x81, 0x03, 0x87, 0x83, 0xe3,
+    0xe0, 0x70, 0x78, 0x38, 0x70, 0x60, 0xf8, 0xf1, 0x01, 0xf0, 0xff, 0x81, 0x03, 0x07, 0xff, 0xc1, 0xe3, 0xf0, 0x6f, 0x38, 0x70, 0x60, 0xf0, 0xf1, 0x01, 0xf8,
+    0xff, 0x80, 0x03, 0x07, 0x7e, 0x80, 0xe3, 0xe0, 0x67, 0x38, 0x70, 0x60, 0xf0, 0xe1, 0x08, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xe0, 0x03, 0xf8, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x07, 0xfc, 0xff, 0x3f, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x0f, 0xff, 0xff, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff,
+    0xff, 0xff, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xc0, 0xff, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-bool      sleepMode               = false;
-bool      loopingInSend           = false;
-bool      menuMode                = false;
-bool      screenOffMode           = false; // Enable normal operation with the screen off - for more battery saving
-uint32_t  lastScreenPrint         = 0;
-uint32_t  joinStart               = 0;
-uint32_t  gpsSearchStart          = 0;
-uint32_t  lastSend                = 0;
-int       currentMenu             = 0;
-bool      displayBatPct           = false; // Change here if you want to see the battery as percent vs voltage (not recommended because it is inacurate unless you go edit some min and max voltage values in the base libraries with values specific to your battery)
-bool      sleepActivatedFromMenu  = false;
-bool      gpsTimerSet             = false;
-#ifdef VIBR_AUTOSLEEP_TIMEOUT
-uint32_t  lastVibrEvent           = 0;
-#endif
-double    last_send_lat           = 0;
-double    last_send_lon           = 0;
-uint32_t  min_dist_moved          = MIN_DIST;
-uint32_t  last_send_time_ms       = 0;
-uint32_t  dist_moved              = UINT32_MAX;
-bool      nonstopMode             = false;
+static TimerEvent_t BatteryUpdateTimer;
+static TimerEvent_t ScreenUpdateTimer;
+static TimerEvent_t KeyDownTimer;
+static TimerEvent_t MenuIdleTimer;
 
-#define MENU_CNT 7
+unsigned int tx_interval_s = 60;
+unsigned int stationary_tx_interval_s = 60;
+float min_dist_moved = 68;
+char *cached_sf_name = "";
+boolean in_menu = false;
+boolean justSendNow = false;
 
-char* menu[MENU_CNT] = {"Screen OFF", "Sleep", "Send now", "Faster Upd", "Slower Upd", "Nonstop", "Debug Info"}; //"Reset GPS", "Bat V/%"
+const char *menu_prev;
+const char *menu_cur;
+const char *menu_next;
+boolean is_highlighted = false;
+int menu_entry = 0;
 
-enum eMenuEntries
-{
-  SCREEN_OFF,
-  SLEEP,
-  SEND_NOW,
-  FASTER_UPD,
-  SLOWER_UPD,
-  NONSTOP_MODE,
-  DEBUG_INFO
-  //RESET_GPS,
-  //BAT_V_PCT
-};
+#define LONG_PRESS_MS 500
+boolean key_down = false;
+uint32_t keyDownTime;
 
-void userKey();
-void setVibrAutoWakeUp();
+void userKeyIRQ(void);
 
-// Timer to schedule wake ups for GPS read before going to sleep 
-static TimerEvent_t GPSCycleTimer;
-// Timer to auto close the menu after certain period of inactivity
-static TimerEvent_t menuIdleTimeout;
+boolean long_press = false;
 
-int32_t fracPart(double val, int n)
-{
+uint32_t last_fix = 0;
+double last_send_lat, last_send_lon;
+uint32_t last_send_ms;
+
+char buffer[40];
+
+#if 0
+int32_t fracPart(double val, int n) {
   return (int32_t)abs(((val - (int32_t)(val)) * pow(10, n)));
 }
+#endif
 
-// RGB LED power on
-void VextON(void)
-{
+// SK6812 (WS2812).  DIN is IO13/GP13/Pin45
+void testRGB(void) {
+  for (uint32_t i = 0; i <= 30; i++) {
+    turnOnRGB(i << 16, 10);
+  }
+  for (uint32_t i = 0; i <= 30; i++) {
+    turnOnRGB(i << 8, 10);
+  }
+  for (uint32_t i = 0; i <= 30; i++) {
+    turnOnRGB(i, 10);
+  }
+  turnOnRGB(0, 0);
+}
+
+// RGB LED power on (Vext to SK5812 pin 4)
+void VextON(void) {
   pinMode(Vext, OUTPUT);
   digitalWrite(Vext, LOW);
 }
 
 // RGB LED power off
-void VextOFF(void) 
-{
+void VextOFF(void) {
   pinMode(Vext, OUTPUT);
   digitalWrite(Vext, HIGH);
 }
 
-void displayGPSInfo()
-{
-  char str[30];
-  display.clear();
-  display.setFont(ArialMT_Plain_10);
-  int index = sprintf(str, "%02d-%02d-%02d", GPS.date.year(), GPS.date.day(), GPS.date.month());
-  str[index] = 0;
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.drawString(0, 0, str);
-  
-  index = sprintf(str, "%02d:%02d:%02d", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
-  str[index] = 0;
-  display.drawString(60, 0, str);
-
-  if (GPS.location.age() < 1000)
-  {
-    display.drawString(120, 0, "A");
-  }
-  else
-  {
-    display.drawString(120, 0, "V");
-  }
-
-  if (GPS.speed.kmph() > 1.2)
-  {
-    display.drawString(107, 0, "M");
-  }
-  else
-  {
-    display.drawString(107, 0, "S");
-  }
-  
-  index = sprintf(str, "alt: %d.%d", (int)GPS.altitude.meters(), fracPart(GPS.altitude.meters(), 2));
-  str[index] = 0;
-  display.drawString(0, 16, str);
-   
-  index = sprintf(str, "hdop: %d.%d", (int)GPS.hdop.hdop(), fracPart(GPS.hdop.hdop(), 2));
-  str[index] = 0;
-  display.drawString(0, 32, str);
-
-  {
-    uint16_t batteryVoltage;
-    batteryVoltage = getBatteryVoltage();
-    float_t batV = ((float_t)batteryVoltage * VBAT_CORRECTION) / 1000;
-    index = sprintf(str, "bat: %d.%02dV", (int)batV, fracPart(batV, 2));
-    str[index] = 0;
-    display.drawString(60, 16, str);
-  }
-
-/*
-  index = sprintf(str, "lat :  %d.%d", (int)GPS.location.lat(), fracPart(GPS.location.lat(), 4));
-  str[index] = 0;
-  display.drawString(60, 16, str);   
-  
-  index = sprintf(str, "lon: %d.%d", (int)GPS.location.lng(), fracPart(GPS.location.lng(), 4));
-  str[index] = 0;
-  display.drawString(60, 32, str);
-  */
-
-  index = sprintf(str, "speed: %d.%d km/h", (int)GPS.speed.kmph(), fracPart(GPS.speed.kmph(), 2));
-  str[index] = 0;
-  display.drawString(0, 48, str);
-
-  index = sprintf(str, "sats: %d", (int)GPS.satellites.value());
-  str[index] = 0;
-  display.drawString(88, 48, str);
-  display.display();
-}
-
-#ifdef DEBUG
-void printGPSInfo()
-{
-  Serial.print("Date/Time: ");
-  if (GPS.date.isValid())
-  {
-    Serial.printf("%d/%02d/%02d", GPS.date.year(), GPS.date.day(), GPS.date.month());
-  }
-  else
-  {
+void printGPSInfo(void) {
+  // Serial.print("Date/Time: ");
+  if (GPS.date.isValid()) {
+    Serial.printf("%d-%02d-%02d", GPS.date.year(), GPS.date.month(), GPS.date.day());
+  } else {
     Serial.print("INVALID");
   }
 
-  if (GPS.time.isValid())
-  {
+  if (GPS.time.isValid()) {
     Serial.printf(" %02d:%02d:%02d.%02d", GPS.time.hour(), GPS.time.minute(), GPS.time.second(), GPS.time.centisecond());
-  }
-  else
-  {
+  } else {
     Serial.print(" INVALID");
   }
-  Serial.println();
-  
-  Serial.print("LAT: ");
+  // Serial.println();
+
+#if 0
+  Serial.print(" LAT: ");
   Serial.print(GPS.location.lat(), 6);
   Serial.print(", LON: ");
   Serial.print(GPS.location.lng(), 6);
   Serial.print(", ALT: ");
   Serial.print(GPS.altitude.meters());
 
-  Serial.println(); 
-  
-  Serial.print("SATS: ");
-  Serial.print(GPS.satellites.value());
   Serial.print(", HDOP: ");
   Serial.print(GPS.hdop.hdop());
   Serial.print(", AGE: ");
@@ -351,961 +213,588 @@ void printGPSInfo()
   Serial.print(", COURSE: ");
   Serial.print(GPS.course.deg());
   Serial.print(", SPEED: ");
-  Serial.println(GPS.speed.kmph());
+  Serial.print(GPS.speed.kmph());
+#endif
+  Serial.print(", Sats: ");
+  Serial.print(GPS.satellites.value());
+
   Serial.println();
 }
-#endif
 
-// Call this from other display methods (assumes the display is initialized and awake)
-void displayBatteryLevel()
-{
-  uint16_t batteryVoltage;
-  uint8_t batteryLevel;
-  float_t batteryLevelPct;
-  char str[30];  
-  int index;
-  
-  detachInterrupt(USER_KEY); // reading battery voltage is messing up with the pin and driving it down, which simulates a long press for our interrupt handler 
-
-  if (displayBatPct)
-  {    
-    //get Battery Level 1-254 Returned by BoardGetBatteryLevel
-    /*                                0: USB,
-    *                                 1: Min level,
-    *                                 x: level
-    *                               254: fully charged,
-    *                               255: Error
-    */
-    batteryLevel = BoardGetBatteryLevel();
-    batteryLevelPct = ((float_t)batteryLevel - BAT_LEVEL_EMPTY) * 100 / (BAT_LEVEL_FULL - BAT_LEVEL_EMPTY);
-    switch (batteryLevel)
-    {
-      case 0:
-        index = sprintf(str, "%s", "USB"); 
-        break;
-      case BAT_LEVEL_EMPTY: 
-        index = sprintf(str, "%s", "LOW"); 
-        break;
-      case 255:
-        index = sprintf(str, "%s", "ERR"); 
-        break;
-      default:
-        index = sprintf(str, "%3u%%", (uint8_t)batteryLevelPct);        
-        break;
-    }  
-  }
-  else
-  {
-    batteryVoltage = getBatteryVoltage();
-    float_t batV = ((float_t)batteryVoltage * VBAT_CORRECTION)/1000;  // Multiply by the appropriate value for your own device to adjust the measured value after calibration
-    index = sprintf(str, "%d.%02dV", (int)batV, fracPart(batV, 2));       
-    
-    // #ifdef DEBUG
-    // Serial.println();
-    // Serial.print("Bat V: ");
-    // Serial.print(batteryVoltage); 
-    // Serial.print(" (");
-    // Serial.print(batV);
-    // Serial.println(")");
-    // #endif 
-  }
-  str[index] = 0;
-
-  attachInterrupt(USER_KEY, userKey, FALLING);  // Attach again after voltage reading is done
-
-  display.setFont(ArialMT_Plain_10);
-  display.setTextAlignment(TEXT_ALIGN_RIGHT);
-  display.drawString(128, 0, str);
-}
-
-void displayLogoAndMsg(String msg, uint32_t wait_ms)
-{
+void displayLogoAndMsg(String msg, uint32_t wait_ms) {
   display.clear();
   display.drawXbm(0, 0, 128, 42, helium_logo_bmp);
-  displayBatteryLevel();
+  // displayBatteryLevel();
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.setFont(ArialMT_Plain_16);
-  display.drawString(64, 54-16/2, msg);
-  #ifdef DEBUG
+  display.drawString(64, 54 - 16 / 2, msg);
   Serial.println(msg);
-  #endif
   display.display();
 
-  if (wait_ms)
-  {
+  if (wait_ms) {
     delay(wait_ms);
-  }    
+  }
 }
 
-int8_t loraDataRate()
-{
+boolean screenOffMode = false;
+
+void switchScreenOffMode() {
+  screenOffMode = true;
+  VextOFF();
+  display.stop();
+  isDisplayOn = 0;
+}
+
+void switchScreenOnMode() {
+  screenOffMode = false;
+  VextON();
+  isDisplayOn = 1;
+  display.init();
+  display.clear();
+  display.display();
+}
+
+// Fetch Data Rate? (DR_0 to DR_5)
+int8_t loraDataRate(void) {
   MibRequestConfirm_t mibReq;
   LoRaMacStatus_t status;
   int8_t ret = -1;
-  
+
   mibReq.Type = MIB_CHANNELS_DATARATE;
-  status = LoRaMacMibGetRequestConfirm( &mibReq );
-  if (status == LORAMAC_STATUS_OK)
-  {
+  status = LoRaMacMibGetRequestConfirm(&mibReq);
+  if (status == LORAMAC_STATUS_OK) {
     ret = mibReq.Param.ChannelsDatarate;
   }
 
   return ret;
 }
 
-void displayJoinTimer()
-{
-  char str[30];
-  int index; 
+uint16_t gpsSearchStart;
 
-  if ((millis() - lastScreenPrint) > 500)
-  {
-    display.setFont(ArialMT_Plain_16);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.clear();
-    display.drawString(58, 22, "JOINING");    
-    if (millis() > joinStart)
-    {
-      index = sprintf(str,"%ds", (millis() - joinStart) / 1000);
-      str[index] = 0; 
-      display.drawString(64, 48, str);
-    }    
-    display.display();
-    lastScreenPrint = millis();    
-  }
-}
+void start_gps() {
+  Serial.println("Starting GPS:");
+  AirGPS.begin(115200);  // Faster messages; less CPU, more idle.
+  AirGPS.setmode(MODE_GPS_BEIDOU_GLONASS);
+  AirGPS.setNMEA(NMEA_RMC | NMEA_GGA);  // Eliminate unused message traffic like SV
 
-void displayGPSInfoEverySecond()
-{
-  if (((millis() - lastScreenPrint) > 500) && GPS.time.isValid() && GPS.time.isUpdated())
-  {            
-    #ifdef DEBUG
-    printGPSInfo();
-    if (screenOffMode)
-    {
-      delay(15);
-    }
-    #endif
-    if (!screenOffMode)
-    {
-      if (!isDispayOn)
-      {
-        display.wakeup();
-        isDispayOn = 1;
-      }    
-      displayGPSInfo();
-    }
-    lastScreenPrint = millis();
-  }
-}
+#if 1
+  // GPSSerial.write("$PCAS02,500*1A\r\n"); /* 500mS updates */
+  GPSSerial.write("$PCAS02,1000*2E\r\n"); /* 1S updates */
+  GPSSerial.flush();
+  delay(10);
+#endif
 
-void displayMenu()
-{
-  int prev; 
-  int next; 
-  String currentOption = menu[currentMenu]; 
-  currentOption.toUpperCase();
+  // Adjust the Green 1pps LED to have shorter blinks.
+  const uint8_t cmdbuf[] = {0xBA, 0xCE, 0x10, 0x00, 0x06, 0x03, 0x40, 0x42, 0x0F, 0x00, 0x10, 0x27, 0x00,
+                            0x00, 0x03, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x63, 0x69, 0x15, 0x0B};
+  /* CFG-TX Time Pulse: 10mS width (vs 100), only if fixed, UTC Time, Automatic source */
+  GPSSerial.write(cmdbuf, sizeof(cmdbuf));
+  GPSSerial.flush();
+  delay(10);
 
-  prev = currentMenu - 1;
-
-  if (prev < 0)
-  {
-    prev = MENU_CNT - 1;
-  }
-
-  next = currentMenu + 1;
-
-  if (next >= MENU_CNT)
-  {
-    next = 0;
-  }
-
-  display.setFont(ArialMT_Plain_10);
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.clear();
-  
-  display.drawString(64, 0, menu[prev]);   
-  display.setFont(ArialMT_Plain_16);
-  display.drawString(64, (display.getHeight() - 16) / 2, currentOption); 
-  display.setFont(ArialMT_Plain_10);
-  display.drawString(64, display.getHeight() - 10, menu[next]); 
-  displayBatteryLevel();
-  display.display();
-}
-
-void displayDebugInfo()
-{
-  char str[30];
-  int index; 
-
-  display.clear();  
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.setFont(ArialMT_Plain_10);
-  index = sprintf(str,"%s: %um", "Update every", min_dist_moved);
-  str[index] = 0;
-  display.drawString(0, 0, str);
-  index = sprintf(str,"%s: %um", "Current distance", dist_moved);
-  str[index] = 0;
-  display.drawString(0, 10, str);
-  index = sprintf(str,"%s: %u", "loopingInSend", loopingInSend);
-  str[index] = 0;
-  display.drawString(0, 20, str);
-  index = sprintf(str,"%s: %u DR: %i", "LoRaJoined", IsLoRaMacNetworkJoined, loraDataRate());
-  str[index] = 0;
-  display.drawString(0, 30, str);
-  index = sprintf(str,"%s: %i", "Unused", 0);
-  str[index] = 0;
-  display.drawString(0, 40, str);
-  index = sprintf(str,"%s: %i", "Nonstop mode", nonstopMode);
-  str[index] = 0;
-  display.drawString(0, 50, str);
-  display.display();
-
-  delay(4000);    
-}
-
-void displayGPSWaitWithCounter()
-{  
-  char str[30];
-  int index;
-
-  if (((millis() - lastScreenPrint) > 500) && (millis() - gpsSearchStart > 1000))
-  {
-    if (!isDispayOn)
-    {
-      display.wakeup(); 
-      isDispayOn = 1;
-    }
-    display.clear();
-    display.drawXbm(0, 0, 128, 42, helium_logo_bmp);
-    display.setFont(ArialMT_Plain_16);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);  
-    display.drawString(0, 54-16/2, "GPS fix wait");           
-    index = sprintf(str,"%d", (millis() - gpsSearchStart) / 1000);
-    str[index] = 0; 
-    display.setTextAlignment(TEXT_ALIGN_RIGHT);  
-    display.drawString(128, 54-16/2, str);
-    display.display();
-    lastScreenPrint = millis();
-  }  
-}
-
-void startGPS()
-{
-  GPS.begin(); // If you are sure that you have selected the right include directive for your GPS chip, you can use GPS.begin(115200) here. 
-  // Air530Z code has setmode(MODE_GPS_BEIDOU_GLONASS) call in begin(), but for Air530 we will need to set it ourselves
-  #ifdef GPS_Air530_H
-  GPS.setmode(MODE_GPS_GLONASS); //Enable dual mode - GLONASS and GPS   
-  #endif
   gpsSearchStart = millis();
+  is_gps_started = true;
+  Serial.println("..done.");
 }
 
-void cycleGPS()
-{
-  uint32_t cycleGPStimer;
-
-  // read the location to clear the updated flag
-  GPS.location.rawLat();
-
-  cycleGPStimer = millis();  
-
-  while (millis() - cycleGPStimer < GPS_READ_RATE)
-  {
-    while (GPS.available() > 0)
-    {
-      GPS.encode(GPS.read());
-    }
-
-    if (GPS.location.isUpdated())
-    {
-      break;
-    }
-    else
-    {
-      if (loopingInSend && !screenOffMode)
-      {
-        displayGPSWaitWithCounter();
-      }
+void update_gps() {
+  while (GPSSerial.available()) {
+    int c = GPSSerial.read();
+    if (c > 0) {
+      char c8 = c;
+      // Serial.print(c8);
+      GPS.encode(c8);
     }
   }
 
-  if (GPS.location.age() < GPS_READ_RATE)
-  {
-    dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, GPS.location.lat(), GPS.location.lng());
+  if (GPS.location.isValid() && GPS.location.isUpdated() && GPS.time.isValid() && GPS.satellites.value() > 3) {
+    // Serial.printf(" %02d:%02d:%02d.%02d\n", GPS.time.hour(), GPS.time.minute(), GPS.time.second(), GPS.time.centisecond());
+    // printGPSInfo();
+    last_fix = millis();
+    GPS.location.lat();  // Reset the isUpdated
   }
 }
 
-void stopGPS()
-{
-  GPS.end();
+void stopGPS() {
+  AirGPS.end();
 }
 
-void switchModeToSleep()
-{
-  sleepMode = true;
-  if (!screenOffMode)
-  {
-    if (!isDispayOn)
-    {
-      display.wakeup();
-      isDispayOn = 1;
-    } 
-    displayLogoAndMsg("Sleeping...", 4000);
-    display.sleep();
-    isDispayOn = 0;
-  }
-  #ifdef DEBUG
-  else
-  {
-    Serial.println("Going to sleep...");
-  }
-  #endif
-  stopGPS();
-  Radio.Sleep(); // Not sure this is needed. It is called by LoRaAPP.cpp in various places after TX done or timeout. Most probably in 99% of the cases it will be already called when we get here. 
-  #ifdef VIBR_SENSOR
-  setVibrAutoWakeUp();
-  #endif
-  deviceState = DEVICE_STATE_SLEEP;
+uint16_t battery_mv;
+void update_battery_mv(void) {
+  detachInterrupt(USER_KEY);
+  battery_mv = getBatteryVoltage() * VBAT_CORRECTION;
+  attachInterrupt(USER_KEY, userKeyIRQ, BOTH);
+  Serial.printf("Bat: %d mV\n", battery_mv);
 }
 
-void switchModeOutOfSleep()
-{
-  sleepMode = false;
-  sleepActivatedFromMenu = false;
-  if (!screenOffMode)
-  {
-    if (!isDispayOn)
-    {
-      display.wakeup();
-      isDispayOn = 1;
-    }
-    displayLogoAndMsg("Waking Up...", 4000);
-    display.clear();
-    display.display();
-  }
-  #ifdef DEBUG
-  else
-  {
-    Serial.println("Waking Up...");
-  }
-  #endif
-  startGPS();
-  deviceState = DEVICE_STATE_SLEEP;
-  loopingInSend = false;
-  #ifdef VIBR_AUTOSLEEP_TIMEOUT
-  lastVibrEvent = millis(); // reset variable to prevent auto sleep immediately after wake up
-  #endif
-  lastSend = millis(); // reset variable to prevent auto sleep immediately after wake up
+#define BATTERY_UPDATE_RATE_MS (10 * 1000)
+void onBatteryUpdateTimer(void) {
+  update_battery_mv();
+  TimerSetValue(&BatteryUpdateTimer, BATTERY_UPDATE_RATE_MS);
+  TimerStart(&BatteryUpdateTimer);
 }
 
-void switchScrenOffMode()
-{
-  screenOffMode = true;  
-  //displayLogoAndMsg("Scren off....", 2000);          
-  VextOFF();
-  display.stop();
-  isDispayOn = 0;   
-}
+/* Populate appData/appDataSize with Mapper frame */
+bool prepare_map_uplink(uint8_t port) {
+  uint32_t lat, lon;
+  int alt, course, speed, hdop, sats;
 
-void switchScreenOnMode()
-{
-  screenOffMode = false;  
-  VextON();
-  display.init();
-  isDispayOn = 1;
-  displayLogoAndMsg("Screen on...", 1000);  
-  display.clear();
-  display.display();
-}
-
-void autoSleepIfNoGPS()
-{
-  #ifdef MAX_GPS_WAIT
-  if (!nonstopMode && (millis() - gpsSearchStart > MAX_GPS_WAIT))
-  {
-    switchModeToSleep();
-  }
-  #endif
-}
-
-static void OnGPSCycleTimerEvent()
-{
-  TimerStop(&GPSCycleTimer);
-
-  if (!loopingInSend)
-  {
-    cycleGPS();  
-
-    // if we moved more than min_dist_moved, then send
-    if ((millis() - last_send_time_ms) > MAX_QUIET_TIME_MS || dist_moved >= min_dist_moved)
-    {
-      deviceState = DEVICE_STATE_SEND;
-      last_send_time_ms = millis();
-    }
-  }
-  gpsTimerSet = false;
-}
-
-#ifdef CAYENNELPP_FORMAT
-bool prepareTxFrame(uint8_t port)
-{  
-  int32_t lat = GPS.location.lat() * 10000;
-  int32_t lon = GPS.location.lng() * 10000;
-  int32_t alt = GPS.altitude.meters() * 100;
+  unsigned char *puc;
 
   appDataSize = 0;
-  appData[appDataSize++] = 0x01;
-  appData[appDataSize++] = 0x88;
-  appData[appDataSize++] = lat >> 16;
-  appData[appDataSize++] = lat >> 8;      
-  appData[appDataSize++] = lat;
-  appData[appDataSize++] = lon >> 16;
-  appData[appDataSize++] = lon >> 8;
-  appData[appDataSize++] = lon;
-  appData[appDataSize++] = alt >> 16;
-  appData[appDataSize++] = alt >> 8;
-  appData[appDataSize++] = alt;
 
+  if (!GPS.location.isValid())
+    return false;
+
+  last_send_lat = GPS.location.lat();
+  last_send_lon = GPS.location.lng();
+
+  lat = ((last_send_lat + 90) / 180.0) * 16777215;
+  lon = ((last_send_lon + 180) / 360.0) * 16777215;
+
+  alt = (uint16_t)GPS.altitude.meters();
+  course = GPS.course.deg();
+  speed = (uint16_t)GPS.speed.kmph();
+  sats = GPS.satellites.value();
+  hdop = GPS.hdop.hdop();
+
+  uint16_t batteryVoltage = ((float_t)((float_t)((float_t)battery_mv * VBAT_CORRECTION) / 10) + 0.5);
+
+  puc = (unsigned char *)(&lat);
+  appData[appDataSize++] = puc[2];
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+
+  puc = (unsigned char *)(&lon);
+  appData[appDataSize++] = puc[2];
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+
+  puc = (unsigned char *)(&alt);
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+
+  puc = (unsigned char *)(&speed);
+  appData[appDataSize++] = puc[0];
+
+  appData[appDataSize++] = (uint8_t)((batteryVoltage - 200) & 0xFF);
+
+  appData[appDataSize++] = (uint8_t)(sats & 0xFF);
   return true;
 }
-#else
-bool prepareTxFrame(uint8_t port)
-{
-  /*appData size is LORAWAN_APP_DATA_MAX_SIZE which is defined in "commissioning.h".
-    appDataSize max value is LORAWAN_APP_DATA_MAX_SIZE.
-    if enabled AT, don't modify LORAWAN_APP_DATA_MAX_SIZE, it may cause system hanging or failure.
-    if disabled AT, LORAWAN_APP_DATA_MAX_SIZE can be modified, the max value is reference to lorawan region and SF.
-    for example, if use REGION_CN470,
-    the max value for different DR can be found in MaxPayloadOfDatarateCN470 refer to DataratesCN470 and BandwidthsCN470 in "RegionCN470.h".
-  */
 
-  uint32_t  lat, lon;
-  int       alt, course, speed, hdop, sats;
-  
-  unsigned char *puc;
-  bool      ret = false;
-  
-  appDataSize = 0;
+void gps_passthrough(void) {
+  Serial.println("GPS Passthrough forever...");
 
-  switch (port)
-  {
-    case APP_PORT_DEFAULT:
-      
-      if (GPS.location.isValid())
-      {
-        last_send_lat = GPS.location.lat(); // store the value for distance calculation
-        last_send_lon = GPS.location.lng(); // store the value for distance calculation
+  while (1) {
+    if (GPSSerial.available())
+      Serial.write(GPSSerial.read());
+    if (Serial.available())
+      GPSSerial.write(Serial.read());
+  }
+}
 
-        lat     = ((last_send_lat + 90) / 180.0) * 16777215;
-        lon     = ((last_send_lon + 180) / 360.0) * 16777215;
+#define SCREEN_HEADER_HEIGHT 24
+uint8_t _screen_line = SCREEN_HEADER_HEIGHT - 1;
+//#include "HT_Display.h"
+SSD1306Wire *disp;
 
-        alt     = (uint16_t)GPS.altitude.meters();
-        course  = GPS.course.deg();
-        speed   = (uint16_t)GPS.speed.kmph();
-        sats    = GPS.satellites.value();
-        hdop    = GPS.hdop.hdop();
+void draw_screen(void);
 
-        detachInterrupt(USER_KEY); // reading battery voltage is messing up with the pin and driving it down, which simulates a long press for our interrupt handler 
-        uint16_t batteryVoltage = ((float_t)((float_t)((float_t)getBatteryVoltage() * VBAT_CORRECTION)  / 10) + .5);  
+#define SCREEN_UPDATE_RATE_MS (500)
+void onScreenUpdateTimer(void) {
+  draw_screen();
+  TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
+  TimerStart(&ScreenUpdateTimer);
+}
 
-        puc = (unsigned char *)(&lat);
-        appData[appDataSize++] = puc[2];
-        appData[appDataSize++] = puc[1];
-        appData[appDataSize++] = puc[0];
+void screen_print(const char *text, uint8_t x, uint8_t y, uint8_t alignment) {
+  disp->setTextAlignment((DISPLAY_TEXT_ALIGNMENT)alignment);
+  disp->drawString(x, y, text);
+}
 
-        puc = (unsigned char *)(&lon);
-        appData[appDataSize++] = puc[2];
-        appData[appDataSize++] = puc[1];
-        appData[appDataSize++] = puc[0];
+void screen_print(const char *text, uint8_t x, uint8_t y) {
+  screen_print(text, x, y, TEXT_ALIGN_LEFT);
+}
 
-        puc = (unsigned char *)(&alt);
-        appData[appDataSize++] = puc[1];
-        appData[appDataSize++] = puc[0];
+void screen_print(const char *text) {
+  Serial.printf(">>> %s\n", text);
 
-        puc = (unsigned char *)(&speed);
-        appData[appDataSize++] = puc[0];
-        
-        appData[appDataSize++] = (uint8_t)((batteryVoltage-200) & 0xFF);
+  disp->print(text);
+  if (_screen_line + 8 > disp->getHeight()) {
+    // scroll
+  }
+  _screen_line += 8;
+}
 
-        appData[appDataSize++] = (uint8_t)(sats & 0xFF);
+void screen_setup() {
+  // Display instance
+  disp = &display;
+  disp->setFont(Custom_ArialMT_Plain_10);
 
-        #ifdef DEBUG
-        Serial.print("Speed ");
-        Serial.print(speed);
-        Serial.println(" kph");
+  // Scroll buffer
+  disp->setLogBuffer(4, 40);
+}
 
-        //get Battery Level 1-254 Returned by BoardGetBatteryLevel
-        uint8_t batteryLevel = BoardGetBatteryLevel();
-        //Convert to %
-        batteryLevel = (uint8_t)((float_t)batteryLevel - BAT_LEVEL_EMPTY) * 100 / (BAT_LEVEL_FULL - BAT_LEVEL_EMPTY);
+struct menu_item {
+  const char *name;
+  void (*func)(void);
+};
 
-        Serial.print("Battery Level ");
-        Serial.print(batteryLevel);
-        Serial.println(" %");
-        
-        Serial.print("BatteryVoltage: ");
-        Serial.println(batteryVoltage);
+void menu_send_now(void) {
+  justSendNow = true;
+}
+void menu_power_off(void) {
+  screen_print("\nPOWER OFF...\n");
+  delay(4000);  // Give some time to read the screen
+  // clean_shutdown();
+}
+void menu_flush_prefs(void) {
+  screen_print("\nFlushing Prefs!\n");
+}
+void menu_distance_plus(void) {
+  min_dist_moved += 10;
+}
+void menu_distance_minus(void) {
+  min_dist_moved -= 10;
+  if (min_dist_moved < 10)
+    min_dist_moved = 10;
+}
+void menu_time_plus(void) {
+  stationary_tx_interval_s += 60;
+}
+void menu_time_minus(void) {
+  stationary_tx_interval_s -= 60;
+  if (stationary_tx_interval_s < 60)
+    stationary_tx_interval_s = 60;
+}
+void menu_gps_passthrough(void) {
+  gps_passthrough();
+  // Does not return.
+}
 
-        Serial.print("SleepMode = ");
-        Serial.println(sleepMode);
-        Serial.println();  
-        #endif
-        attachInterrupt(USER_KEY, userKey, FALLING);  // Attach again after voltage reading is done 
+struct menu_item menu[] = {
+    {"Send Now", menu_send_now}, {"Power Off", menu_power_off}, {"Distance +", menu_distance_plus}, {"Distance -", menu_distance_minus},
+    {"Time +", menu_time_plus},  {"Time -", menu_time_minus},   {"Flush Prefs", menu_flush_prefs},  {"USB GPS", menu_gps_passthrough},
+};
+#define MENU_ENTRIES (sizeof(menu) / sizeof(menu[0]))
 
-        ret = true;
-      }
-      break;
+#define MENU_TIMEOUT_MS 3000
 
-    case APP_PORT_LASTLOC:
-    /*  Unused Tracker
-      puc = (unsigned char *)(&last_lat);
-      appData[appDataSize++] = puc[2];
-      appData[appDataSize++] = puc[1];
-      appData[appDataSize++] = puc[0];
+void onMenuIdleTimer(void) {
+  in_menu = false;
+  is_highlighted = false;
+}
 
-      puc = (unsigned char *)(&last_lon);
-      appData[appDataSize++] = puc[2];
-      appData[appDataSize++] = puc[1];
-      appData[appDataSize++] = puc[0];
-     */
-      ret = true;
-      break;      
+void menu_press(void) {
+  if (in_menu)
+    menu_entry = (menu_entry + 1) % MENU_ENTRIES;
+  else
+    in_menu = true;
+
+  menu_prev = menu[(menu_entry - 1) % MENU_ENTRIES].name;
+  menu_cur = menu[menu_entry].name;
+  menu_next = menu[(menu_entry + 1) % MENU_ENTRIES].name;
+
+  draw_screen();
+  TimerSetValue(&MenuIdleTimer, MENU_TIMEOUT_MS);
+  TimerStart(&MenuIdleTimer);
+}
+
+void menu_selected(void) {
+  if (in_menu) {
+    is_highlighted = true;
+    draw_screen();
+    menu[menu_entry].func();  // Might not return.
+  } else {
+    in_menu = true;
+    draw_screen();
+  }
+}
+
+void menu_deselected(void) {
+  is_highlighted = false;
+  draw_screen();
+}
+
+void onKeyDownTimer(void) {
+  // Long Press!
+  long_press = true;
+  menu_selected();
+}
+
+// Interrupt handler for button press
+void userKeyIRQ(void) {
+  if (!key_down && digitalRead(USER_KEY) == LOW) {
+    // Key Pressed
+    key_down = true;
+    keyDownTime = millis();
+    TimerSetValue(&KeyDownTimer, LONG_PRESS_MS);
+    TimerStart(&KeyDownTimer);
+    long_press = false;
   }
 
-  return ret;
-}
+  if (key_down && digitalRead(USER_KEY) == HIGH) {
+    // Key Released
+    key_down = false;
+    if (long_press) {
+      menu_deselected();
+    } else {
+      TimerStop(&KeyDownTimer);  // Cancel timer
+      menu_press();
+    }
+#if 1
+    uint32_t press_ms = millis() - keyDownTime;
+    Serial.printf("[Key Pressed %lu ms.]\n", press_ms);
 #endif
-
-#ifdef VIBR_SENSOR
-void vibration(void)
-{
-  detachInterrupt(VIBR_SENSOR);
-  #ifdef VIBR_AUTOSLEEP_TIMEOUT
-  lastVibrEvent = millis();
-  #endif
-  
-  // #ifdef DEBUG
-  // Serial.println("Vibration detected");
-  // switch (deviceState)
-  // {
-  //   case DEVICE_STATE_SLEEP:
-  //     Serial.println("Curent State = SLEEP");
-  //     break;
-  //   case DEVICE_STATE_SEND:
-  //     Serial.println("Curent State = SEND");
-  //     break;
-  //   case DEVICE_STATE_CYCLE:
-  //     Serial.println("Current State = CYCLE");
-  //     break;    
-  // }
-  // #endif
-  
-  if (!menuMode) // Ignore vibrations while in the menu
-  {
-    if (sleepMode)
-    {
-      #ifdef VIBR_WAKE_FROM_SLEEP     
-      #ifdef MENU_SLEEP_DISABLE_VIBR_WAKEUP // If menu sleep overwrites the "vibration wake up from sleeep", then add the IF statement to not wake up when sleep was initiated from the menu
-      if (!sleepActivatedFromMenu)
-      #endif  
-      switchModeOutOfSleep();
-      #endif
-    }    
   }
+
+  // Is this kosher?
+  TimerReset(&MenuIdleTimer);
 }
 
-void setVibrAutoWakeUp()
-{
-  bool setupVibr = false; // Default operation is - don't wait for vibration
-
-  // Except if we have VIBR_WAKE_FROM_SLEEP enabled, in which case we need to attach in sleep mode
-  #ifdef VIBR_WAKE_FROM_SLEEP 
-    // But if MENU_SLEEP_DISABLE_VIBR_WAKEUP enabled, only if sleep was not activated from the menu
-    #ifdef MENU_SLEEP_DISABLE_VIBR_WAKEUP
-    if (!sleepActivatedFromMenu)
-    #endif
-      setupVibr = setupVibr | sleepMode;  
-  #endif
-  
-  if (setupVibr)
-  {
-    attachInterrupt(VIBR_SENSOR, vibration, FALLING);
-  }  
+void gps_time(char *buffer, uint8_t size) {
+  snprintf(buffer, size, "%02d:%02d:%02d", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
 }
 
-void autoSleepIfNoVibr()
-{
-  #ifdef VIBR_AUTOSLEEP_TIMEOUT          
-  // if too long since last vibration, force it to go to sleep
-  if (!nonstopMode && (millis() - lastVibrEvent > VIBR_AUTOSLEEP_TIMEOUT))
-  {
-    switchModeToSleep();    
-  }          
-  #endif  
-}
-#endif
+#include "images.h"
 
-void autoSleepIfNoMovement()
-{
-  #ifdef AUTO_SLEEP_TIMER
-  if (!nonstopMode && (millis() - lastSend > AUTO_SLEEP_TIMER))
-  {
-    switchModeToSleep();
-  }
-  #endif
-}
+void screen_header(void) {
+  uint32_t sats;
 
-static void OnMenuIdleTimeout()
-{
-  TimerStop(&menuIdleTimeout);
+  sats = GPS.satellites.value();
 
-  if (menuMode)
-  {
-    menuMode = false;
-    if (!screenOffMode)
-    {
-      display.clear();
-      display.display();
-    }
-  }
-}
+  // Cycle display every 3 seconds
+  if (millis() % 6000 < 3000) {
+    // 2 bytes of Device EUI with Voltage and Current
+    snprintf(buffer, sizeof(buffer), "#%04X", (devEui[6] << 8) | devEui[7]);
+    disp->setTextAlignment(TEXT_ALIGN_LEFT);
+    disp->drawString(0, 2, buffer);
 
-void executeMenu(void)
-{
-  TimerStop(&menuIdleTimeout);
-  
-  switch (currentMenu)
-  {
-    case SCREEN_OFF:
-      switchScrenOffMode();
-      menuMode = false;      
-      break;
-
-    case SLEEP:
-      sleepActivatedFromMenu = true;
-      switchModeToSleep();
-      menuMode = false;
-      break;
-
-    case SEND_NOW:
-      deviceState = DEVICE_STATE_SEND;
-      menuMode = false;
-      break;
-
-    case FASTER_UPD:
-      if (min_dist_moved > 10)
-      {
-        min_dist_moved -= 10;
-      }
-      menuMode = false;
-      break;
-
-    case SLOWER_UPD:
-      if (min_dist_moved < 500)
-      {
-        min_dist_moved += 10;
-      }
-      menuMode = false;
-      break;
-
-    case NONSTOP_MODE:
-      nonstopMode = !nonstopMode;
-      menuMode = false;
-      break;
-
-    case DEBUG_INFO:
-      displayDebugInfo();
-      menuMode = false;
-      break;
-
-    // case RESET_GPS:
-    //   stopGPS();
-    //   delay(1000);
-    //   startGPS();
-    //   deviceState = DEVICE_STATE_CYCLE;  
-    //   menuMode = false;
-    //   break;
-
-    // case BAT_V_PCT:
-    //   displayBatPct = !displayBatPct;
-    //   menuMode = false;
-    //   break;
-
-    default:
-      menuMode = false;
-      break;
-  }
-  if (!screenOffMode)
-  {
-    display.clear();
-    display.display();
-  }
-}
-
-void userKey(void)
-{
-  delay(10);
-  if (digitalRead(USER_KEY) == LOW)
-  {
-    uint16_t keyDownTime = 0;
-    while (digitalRead(USER_KEY) == LOW)
-    {
-      delay(1);
-      keyDownTime++;
-      if (keyDownTime >= 1000)
-        break;
-    }
-
-    if (keyDownTime < 700)
-    {
-      if (sleepMode)
-      {        
-        if (screenOffMode)
-        {
-          screenOffMode = false;  
-          VextON();
-          display.init();
-          isDispayOn = 1;
-        }
-        switchModeOutOfSleep();
-      }
-      else if (screenOffMode)
-      {
-        switchScreenOnMode();
-      }
-      else
-      {
-        if (menuMode)
-        {
-          currentMenu++;
-          if (currentMenu >= MENU_CNT)
-          {
-            currentMenu = 0;
-          }
-        }
-        else
-        {
-          menuMode = true;
-          currentMenu = 0;
-          deviceState = DEVICE_STATE_SLEEP;
-        }        
-        TimerSetValue(&menuIdleTimeout, MENU_IDLE_TIMEOUT);
-        TimerStart(&menuIdleTimeout);
-      }
-    }
+    snprintf(buffer, sizeof(buffer), "%d.%02dV", battery_mv / 1000, (battery_mv % 1000) / 10);
+  } else {
+    if (!GPS.time.isValid() || sats < 3)
+      snprintf(buffer, sizeof(buffer), "*** NO GPS ***");
     else
-    {
-      if (menuMode)
-      {
-        executeMenu();
-      }
-    }
+      gps_time(buffer, sizeof(buffer));
   }
+
+  disp->setTextAlignment(TEXT_ALIGN_CENTER);
+  disp->drawString(disp->getWidth() / 2, 2, buffer);
+
+  // Satellite count
+  disp->setTextAlignment(TEXT_ALIGN_RIGHT);
+  disp->drawString(disp->getWidth() - SATELLITE_IMAGE_WIDTH - 4, 2, itoa(sats, buffer, 10));
+  disp->drawXbm(disp->getWidth() - SATELLITE_IMAGE_WIDTH, 0, SATELLITE_IMAGE_WIDTH, SATELLITE_IMAGE_HEIGHT, SATELLITE_IMAGE);
+
+  // Second status row:
+  snprintf(buffer, sizeof(buffer), "%us   %dm", stationary_tx_interval_s, (int)min_dist_moved);
+  disp->setTextAlignment(TEXT_ALIGN_LEFT);
+  disp->drawString(0, 12, buffer);
+
+  disp->setTextAlignment(TEXT_ALIGN_RIGHT);
+  disp->drawString(disp->getWidth(), 12, cached_sf_name);
+
+  disp->drawHorizontalLine(0, SCREEN_HEADER_HEIGHT, disp->getWidth());
 }
 
-void setup() 
-{
+#define MARGIN 15
+
+void draw_screen(void) {
+  disp->setFont(Custom_ArialMT_Plain_10);
+  disp->clear();
+  screen_header();
+
+  if (in_menu) {
+    disp->setTextAlignment(TEXT_ALIGN_CENTER);
+    disp->drawString(disp->getWidth() / 2, SCREEN_HEADER_HEIGHT + 5, menu_prev);
+    disp->drawString(disp->getWidth() / 2, SCREEN_HEADER_HEIGHT + 28, menu_next);
+    // if (is_highlighted)
+    //    disp->clear();
+    disp->drawHorizontalLine(MARGIN, SCREEN_HEADER_HEIGHT + 16, disp->getWidth() - MARGIN * 2);
+    snprintf(buffer, sizeof(buffer), is_highlighted ? ">>> %s <<<" : "%s", menu_cur);
+    disp->drawString(disp->getWidth() / 2, SCREEN_HEADER_HEIGHT + 16, buffer);
+    disp->drawHorizontalLine(MARGIN, SCREEN_HEADER_HEIGHT + 28, disp->getWidth() - MARGIN * 2);
+    disp->drawVerticalLine(MARGIN, SCREEN_HEADER_HEIGHT + 16, 28 - 16);
+    disp->drawVerticalLine(disp->getWidth() - MARGIN, SCREEN_HEADER_HEIGHT + 16, 28 - 16);
+  } else {
+    disp->drawLogBuffer(0, SCREEN_HEADER_HEIGHT);
+  }
+  disp->display();
+}
+
+void setup() {
   boardInitMcu();
 
-  Serial.begin(115200);  
+  Serial.begin(115200);
 
-  LoRaWAN.generateDeveuiByChipID();  // Overwrite devEui with chip-unique value
-  #if(STAGING_CONSOLE)
+  if (!(devEui[0] || devEui[1] || devEui[2] || devEui[3] || devEui[4] || devEui[5] || devEui[6] || devEui[7]))
+    LoRaWAN.generateDeveuiByChipID();  // Overwrite devEui with chip-unique value
+
+#if (STAGING_CONSOLE)
   devEui[0] = 0xBB;
-  #endif
-  
-  #if(AT_SUPPORT)
+#endif
+
+#if (AT_SUPPORT)
   enableAt();
-  #endif
+#endif
 
-  // Display branding image. If we don't want that - the following 2 lines can be removed  
-  display.init(); // displayMcuInit() will init the display, but if we want to show our logo before that, we need to init ourselves.   
-  isDispayOn = 1;
+  display.init();  // displayMcuInit() will init the display, but if we want to
+                   // show our logo before that, we need to init ourselves.
+  isDisplayOn = 1;
+  displayLogoAndMsg("MaxP Map", 100);
 
-  displayLogoAndMsg("GPSTIMER", 1000);
+  start_gps();  // GPS takes the longest to settle.
 
-  LoRaWAN.displayMcuInit(); // This inits and turns on the display  
-  
+  LoRaWAN.displayMcuInit();  // This inits and turns on the display
   deviceState = DEVICE_STATE_INIT;
-  
-  /* This will switch deviceState to DEVICE_STATE_SLEEP and schedule a SEND timer which will 
-    switch to DEVICE_STATE_SEND if saved network info exists and no new JOIN is necessary */
-  LoRaWAN.ifskipjoin(); 
-  
-  if (deviceState != DEVICE_STATE_INIT)
-  {
-    /* This messes up with LoRaWAN.init() so it can't be called before it, 
-      but if we are not going to call LoRaWAN.init(), then we have to do it here. */
-    startGPS(); 
-  }
-  //Setup user button - this must be after LoRaWAN.ifskipjoin(), because the button is used there to cancel stored settings load and initiate a new join
+
+  /* This will switch deviceState to DEVICE_STATE_SLEEP and schedule a SEND
+   timer which will switch to DEVICE_STATE_SEND if saved network info exists
+   and no new JOIN is necessary */
+  LoRaWAN.ifskipjoin();
+
+  // Setup user button - this must be after LoRaWAN.ifskipjoin(), because the
+  // button is used there to cancel stored settings load and initiate a new join
   pinMode(USER_KEY, INPUT);
-  attachInterrupt(USER_KEY, userKey, FALLING);  
+  attachInterrupt(USER_KEY, userKeyIRQ, BOTH);
 
-  #ifdef VIBR_SENSOR
-  pinMode(VIBR_SENSOR, INPUT);
-  #endif
+  screen_setup();
 
-  TimerInit(&GPSCycleTimer, OnGPSCycleTimerEvent);
-  TimerInit(&menuIdleTimeout, OnMenuIdleTimeout);
+  TimerInit(&BatteryUpdateTimer, onBatteryUpdateTimer);
+  onBatteryUpdateTimer();
+
+  TimerInit(&ScreenUpdateTimer, onScreenUpdateTimer);
+  onScreenUpdateTimer();
+
+  TimerInit(&KeyDownTimer, onKeyDownTimer);
+
+  TimerInit(&MenuIdleTimer, onMenuIdleTimer);
 }
 
-void loop()
-{
-  switch (deviceState)
-  {
-    case DEVICE_STATE_INIT:
-    {
-      #if(AT_SUPPORT)
+uint32_t joinStart;
+uint32_t lastSend;
+boolean first_send = true;
+double min_dist_m = MIN_DIST_M;
+uint32_t max_time_ms = MAX_TIME_S * 1000;
+
+#if 0
+      // only if screen on mode (otherwise the dispaly object is
+      // not initialized and calling methods from it will cause
+      // a crash)
+      if (0 && !screenOffMode && isDisplayOn) {
+        display.sleep();
+        VextOFF();
+        isDisplayOn = 0;
+      }
+
+#endif
+
+//#define MIN_DIST_M              68.0       // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m.
+//#define MAX_TIME_S              ( 2 * 60)  // If no minimum movement, the LoRa frame will still be sent once every N seconds
+
+//#define REST_WAIT_S             (30 * 60)  // If we still haven't moved in this many seconds, start sending even slower
+//#define REST_TIME_S             (10 * 60)  // Slow resting ping frequency in seconds
+
+boolean send_mapper_uplink(void) {
+  uint32_t now = millis();
+
+  if (!GPS.location.isValid())
+    return false;
+
+  double dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, GPS.location.lat(), GPS.location.lng());
+
+  Serial.printf("[%ds, %dm]\n", (now - last_send_ms) / 1000, (int32_t)dist_moved);
+  char because = '?';
+  if (justSendNow) {
+    justSendNow = false;
+    Serial.println("** SEND_NOW");
+    because = '>';
+  } else if (dist_moved > min_dist_m) {
+    Serial.println("** MOVING");
+    // last_moved_millis = now;
+    because = 'D';
+  } else if (now - last_send_ms > max_time_ms) {
+    Serial.println("** TIME");
+    because = 'T';
+  } else {
+    return false;  // Nothing to do, go home early
+  }
+
+  if (!prepare_map_uplink(appPort))  // Don't send bad data
+    return false;
+
+#if 0
+  if (!screenOffMode) {
+    LoRaWAN.displaySending();
+  }
+#endif
+
+
+  // The first distance-moved is crazy, since has no origin.. don't put it on screen.
+  if (dist_moved > 1000000)
+    dist_moved = 0;
+
+  printGPSInfo();
+  snprintf(buffer, sizeof(buffer), "%d %c %ds %dm\n", UpLinkCounter, because, (now - last_send_ms) / 1000, (int32_t)dist_moved);
+  // Serial.print(buffer);
+  screen_print(buffer);
+
+  LoRaWAN.send();
+  last_send_ms = now;
+}
+
+void loop() {
+  update_gps();  // Digest any pending bytes to update position
+
+  switch (deviceState) {
+    case DEVICE_STATE_INIT: {
+      Serial.print("[INIT] ");
+#if (AT_SUPPORT)
       getDevParam();
-      #endif
+#endif
       printDevParam();
       LoRaWAN.init(loraWanClass, loraWanRegion);
-      LoRaWAN.setDataRateForNoADR(0); // Set DR_0       
-      deviceState = DEVICE_STATE_JOIN;
+      LoRaWAN.setDataRateForNoADR(0);  // Set DR_0
+      // deviceState = DEVICE_STATE_JOIN;
       break;
     }
-    case DEVICE_STATE_JOIN:
-    {
-      startGPS();
+    case DEVICE_STATE_JOIN: {
+      Serial.print("[JOIN] ");
       LoRaWAN.displayJoining();
       LoRaWAN.join();
       joinStart = millis();
-      lastScreenPrint = joinStart;
       break;
     }
-    case DEVICE_STATE_SEND:
-    {
-      if (menuMode || sleepMode)
-      {
-        deviceState = DEVICE_STATE_SLEEP;
+    case DEVICE_STATE_SEND: {
+      if (first_send) {
+        screen_print("Joined Helium!\n");
+        justSendNow = true;
+        first_send = false;
       }
-      else
-      {
-        /*  Unused Tracker
-        if (sendLastLoc && lastLocSet)
-        {
-          appPort = APP_PORT_LASTLOC;
-          if (prepareTxFrame(appPort))
-          {
-            LoRaWAN.send();   
-          }
-          sendLastLoc = false;
-          appPort = APP_PORT_DEFAULT;
-        }
-        */
-        if (!loopingInSend) // We are just getting here from some other state
-        {
-          loopingInSend = true; // We may be staying here for a while, but we want to reset the below variables only once when we enter.
-          /* Reset both these variables. The goal is to skip the first unnecessary display of the GPS Fix Wait screen 
-            and only show it if there was more than 1s without GPS fix and correctly display the time passed on it */
-          gpsSearchStart = lastScreenPrint = millis(); 
-        }
-        
-        cycleGPS(); // Read anything queued in the GPS Serial buffer, parse it and populate the internal variables with the latest GPS data
-        
-        if ((GPS.location.age() < GPS_READ_RATE) && (GPS.hdop.hdop() < 2))
-        {
-          if (prepareTxFrame(appPort)) // Don't send bad data (the method will return false if GPS coordinates are 0)
-          {
-            if (!menuMode && !sleepMode) // In case user pressed the button while prepareTxFrame() was running
-            {
-              if (!screenOffMode)
-              {
-                LoRaWAN.displaySending();
-              }
-              LoRaWAN.send();
-              lastSend = millis();
-            }
-            // if (!screenOffMode)
-            // {
-            //   display.sleep();
-            //   isDispayOn = 0;
-            //   VextOFF();
-            // }
-          }
-          deviceState = DEVICE_STATE_SLEEP; // Schedule GPS timer and go to sleep
-        }   
-        else
-        {
-          // if (!screenOffMode)
-          // {
-          //   displayGPSWaitWithCounter();
-          // }
-          autoSleepIfNoGPS(); // If the wait for GPS is too long, automatically go to sleep
-        }   
-      }
+      if (!send_mapper_uplink())
+        deviceState = DEVICE_STATE_CYCLE;  // take a break;
       break;
     }
-    case DEVICE_STATE_CYCLE:
-    {
-      loopingInSend = false;
+    case DEVICE_STATE_CYCLE: {
+      // Serial.print("[CYCLE] ");
 
-      // not sure if this is necessary
-      // if (!gpsTimerSet)
-      // {
-      //   // Schedule a wakeup for GPS read before going to sleep
-      //   TimerSetValue(&GPSCycleTimer, GPS_READ_RATE);
-      //   TimerStart(&GPSCycleTimer);
-      //   gpsTimerSet = true;
-      // }
+      LoRaWAN.cycle(appTxDutyCycle);  // Sets a timer to check state
       deviceState = DEVICE_STATE_SLEEP;
       break;
     }
-    case DEVICE_STATE_SLEEP:
-    {
-      loopingInSend = false;
-      if (menuMode)
-      {
-        if (!isDispayOn)
-        {
-          display.wakeup();
-          isDispayOn = 1;
-        }
-        displayMenu();
-      }
-      else if (!IsLoRaMacNetworkJoined)
-      {
-        if (!screenOffMode)
-        {
-          displayJoinTimer(); // When not joined yet, it will display the seconds passed, so the user knows it is doing something
-        }
-      }
-      else if (!sleepMode) // When not in sleep mode - display the current GPS every second
-      {
-        autoSleepIfNoMovement();
-
-        if (!sleepMode) // checking if autoSleepIfNoMovement() changed it
-        {
-          displayGPSInfoEverySecond();
-
-          if (!gpsTimerSet) 
-          {
-            // Schedule a wakeup for GPS read before going to sleep
-            TimerSetValue(&GPSCycleTimer, GPS_READ_RATE);
-            TimerStart(&GPSCycleTimer);
-            gpsTimerSet = true;          
-          }
-        }
-      }
-      else // going to deep sleep, no need to keep the display on
-      {
-        if (!screenOffMode && isDispayOn) // only if screen on mode (otherwise the dispaly object is not initialized and calling methods from it will cause a crash)
-        {
-          display.sleep();
-          VextOFF();
-          isDispayOn = 0;
-        }
-      }
-      
-      if (deviceState == DEVICE_STATE_SLEEP) // because the exit from the menu may change it to Cycle or Send and we don't want to go to sleep without having scheduled a wakeup
-      {
-        LoRaWAN.sleep();
-      }
+    case DEVICE_STATE_SLEEP: {
+      extern bool wakeByUart;  // Declared in binary-only AT_Command.o!
+      wakeByUart = true;       // Should awake before GPS activity, but just in case..
+      // Serial.end();
+      // GPSSerial.end();
+      LoRaWAN.sleep();  // Causes serial port noise
+      // Serial.begin(115200);
+      // GPSSerial.begin(115200);
       break;
     }
-    default:
-    {
+    default: {
+      Serial.printf("Surprising state: %d\n", deviceState);
       deviceState = DEVICE_STATE_INIT;
       break;
     }
