@@ -19,6 +19,7 @@
 #include "configuration.h"
 #include "credentials.h"
 #include "fonts.inc"  // for Custom_ArialMT_Plain_10
+#include "images.h"
 
 #define DEBUG  // Enable/Disable debug output over the serial console
 
@@ -396,7 +397,6 @@ void gps_passthrough(void) {
 
 #define SCREEN_HEADER_HEIGHT 24
 uint8_t _screen_line = SCREEN_HEADER_HEIGHT - 1;
-//#include "HT_Display.h"
 SSD1306Wire *disp;
 
 void draw_screen(void);
@@ -556,8 +556,6 @@ void userKeyIRQ(void) {
 void gps_time(char *buffer, uint8_t size) {
   snprintf(buffer, size, "%02d:%02d:%02d", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
 }
-
-#include "images.h"
 
 void screen_header(void) {
   uint32_t sats;
