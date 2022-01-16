@@ -16,13 +16,14 @@
 #include "HT_DisplayFonts.h"  // For Arial
 #include "HT_SSD1306Wire.h"   // HelTec's old version of SSD1306Wire.h
 #include "LoRaWan_APP.h"
-#include "TinyGPS++.h"        // More recent/superior library
-#include "fonts.inc"          // for Custom_ArialMT_Plain_10
-#include "images.h"           // For Satellite icon
-#include "configuration.h"    // User configuration
-#include "credentials.h"      // Helium LoRaWAN credentials
+#include "cyPm.h"  // For deep sleep
+//#include "TinyGPS++.h"        // More recent/superior library
+#include "configuration.h"  // User configuration
+#include "credentials.h"    // Helium LoRaWAN credentials
+#include "fonts.inc"        // for Custom_ArialMT_Plain_10
+#include "images.h"         // For Satellite icon
 
-extern SSD1306Wire display;       // Defined in LoRaWan_APP.cpp (!)
+extern SSD1306Wire display;     // Defined in LoRaWan_APP.cpp (!)
 extern uint8_t isDispayOn;      // [sic] Defined in LoRaWan_APP.cpp
 #define isDisplayOn isDispayOn  // Seriously.  It's wrong all over LoRaWan_APP.
 
@@ -30,8 +31,8 @@ extern uint32_t UpLinkCounter;  // FCnt, Frame Count, Uplink Sequence Number
 
 extern HardwareSerial GPSSerial;  // Defined in GPSTrans.cpp
 Air530ZClass AirGPS;              // Just for Init.  Has some Air530Z specials.
-TinyGPSPlus GPS;                  // Avoid the Heltec library as much as we can
-boolean is_gps_started = false;
+// TinyGPSPlus GPS;                  // Avoid the Heltec library as much as we can
+#define GPS AirGPS
 
 #if defined(REGION_EU868)
 /*LoraWan channelsmask, default channels 0-7*/
@@ -95,38 +96,29 @@ static TimerEvent_t ScreenUpdateTimer;
 static TimerEvent_t KeyDownTimer;
 static TimerEvent_t MenuIdleTimer;
 
-unsigned int tx_interval_s = 60;
-unsigned int stationary_tx_interval_s = 60;
-float min_dist_moved = 68;
-char *cached_sf_name = "";
+float min_dist_moved = MIN_DIST_M;
+uint32_t max_time_ms = MAX_TIME_S * 1000;
+
 boolean in_menu = false;
 boolean justSendNow = false;
 
-const char *menu_prev;
-const char *menu_cur;
-const char *menu_next;
+const char *menu_prev;  // Previous menu name
+const char *menu_cur;   // Highlighted menu name
+const char *menu_next;  // Next menu name
 boolean is_highlighted = false;
 int menu_entry = 0;
 
-#define LONG_PRESS_MS 500
 boolean key_down = false;
 uint32_t keyDownTime;
-
 void userKeyIRQ(void);
-
 boolean long_press = false;
 
 uint32_t last_fix = 0;
 double last_send_lat, last_send_lon;
 uint32_t last_send_ms;
+boolean first_send = true;
 
-char buffer[40];
-
-#if 0
-int32_t fracPart(double val, int n) {
-  return (int32_t)abs(((val - (int32_t)(val)) * pow(10, n)));
-}
-#endif
+char buffer[40];  // Scratch string display buffer
 
 // SK6812 (WS2812).  DIN is IO13/GP13/Pin45
 void testRGB(void) {
@@ -240,7 +232,47 @@ int8_t loraDataRate(void) {
   return ret;
 }
 
-uint16_t gpsSearchStart;
+#define SCREEN_HEADER_HEIGHT 24
+uint8_t _screen_line = SCREEN_HEADER_HEIGHT - 1;
+SSD1306Wire *disp;
+
+void draw_screen(void);
+
+void onScreenUpdateTimer(void) {
+  draw_screen();
+  TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
+  TimerStart(&ScreenUpdateTimer);
+}
+
+void screen_print(const char *text, uint8_t x, uint8_t y, uint8_t alignment) {
+  disp->setTextAlignment((DISPLAY_TEXT_ALIGNMENT)alignment);
+  disp->drawString(x, y, text);
+}
+
+void screen_print(const char *text, uint8_t x, uint8_t y) {
+  screen_print(text, x, y, TEXT_ALIGN_LEFT);
+}
+
+void screen_print(const char *text) {
+  Serial.printf(">>> %s\n", text);
+
+  disp->print(text);
+  if (_screen_line + 8 > disp->getHeight()) {
+    // scroll
+  }
+  _screen_line += 8;
+}
+
+void screen_setup() {
+  // Display instance
+  disp = &display;
+  disp->setFont(Custom_ArialMT_Plain_10);
+
+  // Scroll buffer
+  disp->setLogBuffer(4, 40);
+}
+
+uint32_t gps_start_time;
 
 void start_gps() {
   Serial.println("Starting GPS:");
@@ -263,12 +295,11 @@ void start_gps() {
   GPSSerial.flush();
   delay(10);
 
-  gpsSearchStart = millis();
-  is_gps_started = true;
-  Serial.println("..done.");
+  gps_start_time = millis();
 }
 
 void update_gps() {
+  static boolean firstfix = true;
   while (GPSSerial.available()) {
     int c = GPSSerial.read();
     if (c > 0) {
@@ -278,10 +309,15 @@ void update_gps() {
     }
   }
 
-  if (GPS.location.isValid() && GPS.location.isUpdated() && GPS.time.isValid() && GPS.satellites.value() > 3) {
+  if (GPS.location.isValid() && GPS.location.isUpdated() && GPS.time.isValid() && GPS.date.isValid() && GPS.satellites.value() > 3) {
     // Serial.printf(" %02d:%02d:%02d.%02d\n", GPS.time.hour(), GPS.time.minute(), GPS.time.second(), GPS.time.centisecond());
     // printGPSInfo();
     last_fix = millis();
+    if (firstfix) {
+      firstfix = false;
+      snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix - gps_start_time) / 1000);
+      screen_print(buffer);
+    }
     GPS.location.lat();  // Reset the isUpdated
   }
 }
@@ -298,7 +334,6 @@ void update_battery_mv(void) {
   Serial.printf("Bat: %d mV\n", battery_mv);
 }
 
-#define BATTERY_UPDATE_RATE_MS (10 * 1000)
 void onBatteryUpdateTimer(void) {
   update_battery_mv();
   TimerSetValue(&BatteryUpdateTimer, BATTERY_UPDATE_RATE_MS);
@@ -365,47 +400,6 @@ void gps_passthrough(void) {
   }
 }
 
-#define SCREEN_HEADER_HEIGHT 24
-uint8_t _screen_line = SCREEN_HEADER_HEIGHT - 1;
-SSD1306Wire *disp;
-
-void draw_screen(void);
-
-#define SCREEN_UPDATE_RATE_MS (500)
-void onScreenUpdateTimer(void) {
-  draw_screen();
-  TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
-  TimerStart(&ScreenUpdateTimer);
-}
-
-void screen_print(const char *text, uint8_t x, uint8_t y, uint8_t alignment) {
-  disp->setTextAlignment((DISPLAY_TEXT_ALIGNMENT)alignment);
-  disp->drawString(x, y, text);
-}
-
-void screen_print(const char *text, uint8_t x, uint8_t y) {
-  screen_print(text, x, y, TEXT_ALIGN_LEFT);
-}
-
-void screen_print(const char *text) {
-  Serial.printf(">>> %s\n", text);
-
-  disp->print(text);
-  if (_screen_line + 8 > disp->getHeight()) {
-    // scroll
-  }
-  _screen_line += 8;
-}
-
-void screen_setup() {
-  // Display instance
-  disp = &display;
-  disp->setFont(Custom_ArialMT_Plain_10);
-
-  // Scroll buffer
-  disp->setLogBuffer(4, 40);
-}
-
 struct menu_item {
   const char *name;
   void (*func)(void);
@@ -414,14 +408,30 @@ struct menu_item {
 void menu_send_now(void) {
   justSendNow = true;
 }
+
 void menu_power_off(void) {
   screen_print("\nPOWER OFF...\n");
-  delay(4000);  // Give some time to read the screen
-  // clean_shutdown();
+  delay(1000);  // Give some time to read the screen
+  VextOFF();
+  pinMode(Vext, ANALOG);
+  pinMode(ADC, ANALOG);
+  display.sleep();
+  display.displayOff();
+  display.stop();
+  detachInterrupt(RADIO_DIO_1);
+  isDisplayOn = 0;
+  AirGPS.end();
+
+  Radio.Sleep();
+  TimerStop(&KeyDownTimer);
+  TimerStop(&BatteryUpdateTimer);
+  TimerStop(&ScreenUpdateTimer);
+  TimerStop(&MenuIdleTimer);
+
+  // Must Reset to exit
+  while (1) lowPowerHandler();
 }
-void menu_flush_prefs(void) {
-  screen_print("\nFlushing Prefs!\n");
-}
+
 void menu_distance_plus(void) {
   min_dist_moved += 10;
 }
@@ -431,25 +441,23 @@ void menu_distance_minus(void) {
     min_dist_moved = 10;
 }
 void menu_time_plus(void) {
-  stationary_tx_interval_s += 60;
+  max_time_ms += 60 * 1000;
 }
 void menu_time_minus(void) {
-  stationary_tx_interval_s -= 60;
-  if (stationary_tx_interval_s < 60)
-    stationary_tx_interval_s = 60;
+  max_time_ms -= 60 * 1000;
+  if (max_time_ms < 60 * 1000)
+    max_time_ms = 60 * 1000;
 }
 void menu_gps_passthrough(void) {
   gps_passthrough();
-  // Does not return.
+  // Does not return!
 }
 
 struct menu_item menu[] = {
-    {"Send Now", menu_send_now}, {"Power Off", menu_power_off}, {"Distance +", menu_distance_plus}, {"Distance -", menu_distance_minus},
-    {"Time +", menu_time_plus},  {"Time -", menu_time_minus},   {"Flush Prefs", menu_flush_prefs},  {"USB GPS", menu_gps_passthrough},
+    {"Send Now", menu_send_now},  {"Power Off", menu_power_off}, {"Distance +10", menu_distance_plus}, {"Distance -10", menu_distance_minus},
+    {"Time +60", menu_time_plus}, {"Time -60", menu_time_minus}, {"USB GPS", menu_gps_passthrough},
 };
 #define MENU_ENTRIES (sizeof(menu) / sizeof(menu[0]))
-
-#define MENU_TIMEOUT_MS 3000
 
 void onMenuIdleTimer(void) {
   in_menu = false;
@@ -556,12 +564,12 @@ void screen_header(void) {
   disp->drawXbm(disp->getWidth() - SATELLITE_IMAGE_WIDTH, 0, SATELLITE_IMAGE_WIDTH, SATELLITE_IMAGE_HEIGHT, SATELLITE_IMAGE);
 
   // Second status row:
-  snprintf(buffer, sizeof(buffer), "%us   %dm", stationary_tx_interval_s, (int)min_dist_moved);
+  snprintf(buffer, sizeof(buffer), "%us   %dm", max_time_ms / 1000, (int)min_dist_moved);
   disp->setTextAlignment(TEXT_ALIGN_LEFT);
   disp->drawString(0, 12, buffer);
 
-  disp->setTextAlignment(TEXT_ALIGN_RIGHT);
-  disp->drawString(disp->getWidth(), 12, cached_sf_name);
+  // disp->setTextAlignment(TEXT_ALIGN_RIGHT);
+  // disp->drawString(disp->getWidth(), 12, cached_sf_name);
 
   disp->drawHorizontalLine(0, SCREEN_HEADER_HEIGHT, disp->getWidth());
 }
@@ -640,29 +648,15 @@ void setup() {
   TimerInit(&MenuIdleTimer, onMenuIdleTimer);
 }
 
-uint32_t joinStart;
-uint32_t lastSend;
-boolean first_send = true;
-double min_dist_m = MIN_DIST_M;
-uint32_t max_time_ms = MAX_TIME_S * 1000;
-
 #if 0
       // only if screen on mode (otherwise the dispaly object is
       // not initialized and calling methods from it will cause
       // a crash)
       if (0 && !screenOffMode && isDisplayOn) {
-        display.sleep();
-        VextOFF();
-        isDisplayOn = 0;
+  
       }
 
 #endif
-
-//#define MIN_DIST_M              68.0       // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m.
-//#define MAX_TIME_S              ( 2 * 60)  // If no minimum movement, the LoRa frame will still be sent once every N seconds
-
-//#define REST_WAIT_S             (30 * 60)  // If we still haven't moved in this many seconds, start sending even slower
-//#define REST_TIME_S             (10 * 60)  // Slow resting ping frequency in seconds
 
 boolean send_mapper_uplink(void) {
   uint32_t now = millis();
@@ -678,7 +672,7 @@ boolean send_mapper_uplink(void) {
     justSendNow = false;
     Serial.println("** SEND_NOW");
     because = '>';
-  } else if (dist_moved > min_dist_m) {
+  } else if (dist_moved > min_dist_moved) {
     Serial.println("** MOVING");
     // last_moved_millis = now;
     because = 'D';
@@ -698,7 +692,6 @@ boolean send_mapper_uplink(void) {
   }
 #endif
 
-
   // The first distance-moved is crazy, since has no origin.. don't put it on screen.
   if (dist_moved > 1000000)
     dist_moved = 0;
@@ -713,11 +706,13 @@ boolean send_mapper_uplink(void) {
 }
 
 void loop() {
+  static uint32_t lora_start_time;
   update_gps();  // Digest any pending bytes to update position
 
   switch (deviceState) {
     case DEVICE_STATE_INIT: {
-      Serial.print("[INIT] ");
+      // Serial.print("[INIT] ");
+      lora_start_time = millis();
 #if (AT_SUPPORT)
       getDevParam();
 #endif
@@ -731,14 +726,14 @@ void loop() {
       Serial.print("[JOIN] ");
       LoRaWAN.displayJoining();
       LoRaWAN.join();
-      joinStart = millis();
       break;
     }
     case DEVICE_STATE_SEND: {
       if (first_send) {
-        screen_print("Joined Helium!\n");
-        justSendNow = true;
         first_send = false;
+        snprintf(buffer, sizeof(buffer), "Joined @ %d sec\n", (millis() - lora_start_time) / 1000);
+        screen_print(buffer);
+        justSendNow = true;
       }
       if (!send_mapper_uplink())
         deviceState = DEVICE_STATE_CYCLE;  // take a break;

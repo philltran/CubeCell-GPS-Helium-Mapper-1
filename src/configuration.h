@@ -1,3 +1,7 @@
+// Version
+#define APP_NAME    "Cube Mapper"
+#define APP_VERSION "2.1.1 MaxP"
+
 // -----------------------------------------------------------------------------
 // CONFIGURATION
 // Stuff you might reasonably want to change is here:
@@ -9,23 +13,18 @@
 #define REST_WAIT_S             (30 * 60)  // If we still haven't moved in this many seconds, start sending even slower
 #define REST_TIME_S             (10 * 60)  // Slow resting ping frequency in seconds
 
-#define BATTERY_LOW_VOLTAGE 3.4  // Below this voltage, power off until USB power allows charging
+#define BATTERY_LOW_VOLTAGE 3.4             // Below this voltage, power off until USB power allows charging
 
-#define LORAWAN_PORT 2              // FPort for Uplink messages -- must match Helium Console Decoder script!
-#define LORAWAN_CONFIRMED_EVERY 0  // Send confirmed message for ACK every N messages (0 means never, 1 means always, 2 every-other-one..)
-#define LORAWAN_SF DR_SF7           // Spreading factor (recommended DR_SF7 for network map purposes, DR_SF10 is slower/more-reach)
+#define LORAWAN_PORT 2                      // FPort for Uplink messages -- must match Helium Console Decoder script!
+#define LORAWAN_CONFIRMED_EVERY 0           // Send confirmed message for ACK every N messages (0 means never, 1 means always, 2 every-other-one..)
+#define LORAWAN_SF DR_SF7                   // Spreading factor (recommended DR_SF7 for network map purposes, DR_SF10 is slower/more-reach)
 
-// -----------------------------------------------------------------------------
-// Version
-// -----------------------------------------------------------------------------
-
-#define APP_NAME "Cube Mapper"
-#define APP_VERSION "1.6.2 MaxP"
 
 // -----------------------------------------------------------------------------
 // Less common Configuration iteams
 // -----------------------------------------------------------------------------
-
-#define LOGO_DELAY 2000  // Time to show logo on first boot (ms)
-
-#define VBAT_CORRECTION 1.004  // Edit this for calibrating your battery voltage
+#define VBAT_CORRECTION 1.004   // Edit this for calibrating your battery voltage
+#define MENU_TIMEOUT_MS 3000    // Menu timeout milliseconds
+#define LONG_PRESS_MS 500       // How long to hold the button to Select
+#define BATTERY_UPDATE_RATE_MS (10 * 1000) // How often to sample battery voltage
+#define SCREEN_UPDATE_RATE_MS 500 // Refresh OLED screen this often
