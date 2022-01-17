@@ -142,7 +142,7 @@ boolean is_gps_lost = false;    // No GPS Fix?
 uint32_t last_lost_gps_ms = 0;  // When did we last cry about no GPS
 uint32_t last_moved_ms = 0;     // When did we last notice significant movement
 
-uint16_t battery_mv; // Last measured battery voltage in millivolts
+uint16_t battery_mv;  // Last measured battery voltage in millivolts
 
 char buffer[40];  // Scratch string buffer for display strings
 
@@ -743,8 +743,8 @@ void setup() {
 
   TimerInit(&ScreenUpdateTimer, onScreenUpdateTimer);
   TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
-  TimerStart(&ScreenUpdateTimer); // Let's Go!
-  }
+  TimerStart(&ScreenUpdateTimer);  // Let's Go!
+}
 
 boolean send_lost_uplink() {
   uint32 now = millis();
@@ -980,9 +980,8 @@ void loop() {
     case DEVICE_STATE_SLEEP: {
       // Serial.print("[SLEEP] ");
       wakeByUart = true;  // Should awake before GPS activity, but just in case..
-      LoRaWAN.sleep();  // Causes serial port noise
+      LoRaWAN.sleep();    // Causes serial port noise
       break;
-
     }
     default: {
       Serial.printf("Surprising state: %d\n", deviceState);
