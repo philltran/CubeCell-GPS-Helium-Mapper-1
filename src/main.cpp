@@ -68,10 +68,8 @@ bool keepNet = LORAWAN_NET_RESERVE;
 /* Indicates if the node is sending confirmed or unconfirmed messages */
 bool isTxConfirmed = LORAWAN_UPLINKMODE;
 
-#define APP_PORT_DEFAULT 2  // Mapper
-
-/* Application port */
-uint8_t appPort = APP_PORT_DEFAULT;
+/* Application port.  NOTE: Name is fixed, as LoRa library will extern ours (!) */
+uint8_t appPort = 0;
 
 /*!
   Number of trials to transmit the frame, if the LoRaMAC layer did not
@@ -126,10 +124,11 @@ uint32_t keyDownTime;        // how long was it pressed for
 void userKeyIRQ(void);       // (soft) interrupt handler for key press
 boolean long_press = false;  // did this count as a Long press?
 
-uint32_t last_fix_ms = 0;             // When did we last get a good GPS fix?
-double last_send_lat, last_send_lon;  // Last coordinates sent
-uint32_t last_send_ms;                // time of last uplink
-boolean first_send = true;            // is this our first uplink?
+uint32_t last_fix_ms = 0;    // When did we last get a good GPS fix?
+double last_send_lat = 0.0;  // Last sent Latitude
+double last_send_lon = 0.0;  // Last sent Longitude
+uint32_t last_send_ms;       // time of last uplink
+boolean first_send = true;   // is this our first uplink?
 
 boolean need_light_sleep = false;  // Should we be in low-power state?
 boolean need_deep_sleep = false;   // Should we be in lowest-power state?
@@ -749,8 +748,44 @@ void setup() {
 boolean send_lost_uplink() {
   uint32 now = millis();
   Serial.printf("Lost GPS %ds ago\n", (now - last_fix_ms) / 1000);
+  unsigned char *puc;
+
+  // Use last-known location; might be zero
+  double lat = ((last_send_lat + 90) / 180.0) * 16777215;
+  double lon = ((last_send_lon + 180) / 360.0) * 16777215;
+
+  uint8_t sats = GPS.satellites.value();
+
+  uint16_t batteryVoltage = ((float_t)((float_t)((float_t)battery_mv * VBAT_CORRECTION) / 10) + 0.5);
+
+  uint16_t lost_minutes = MAX(0xFFFF, (now - last_fix_ms) / 1000 / 60);
+
+  appPort = FPORT_LOST_GPS;
+  appDataSize = 0;
+  puc = (unsigned char *)(&lat);
+  appData[appDataSize++] = puc[2];
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+
+  puc = (unsigned char *)(&lon);
+  appData[appDataSize++] = puc[2];
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+
+  appData[appDataSize++] = (uint8_t)((batteryVoltage - 200) & 0xFF);
+
+  appData[appDataSize++] = (uint8_t)(sats & 0xFF);
+
+  puc = (unsigned char *)(&lost_minutes);
+  appData[appDataSize++] = puc[1];
+  appData[appDataSize++] = puc[0];
+  
+  snprintf(buffer, sizeof(buffer), "%d NO-GPS %dmin\n", UpLinkCounter, lost_minutes);
+  screen_print(buffer);
+
   last_lost_gps_ms = now;
-  // TODO Send Lost GPS uplink
+  LoRaWAN.send();
+  
   return true;
 }
 
@@ -764,7 +799,7 @@ boolean send_uplink(void) {
   }
   if (!is_gps_lost && (now - last_fix_ms > GPS_LOST_WAIT_S * 1000)) {
     // Haven't seen GPS in a while.  Send a non-Mapper packet
-    screen_print("Lost GPS\n");
+    screen_print("Lost GPS!\n");
     is_gps_lost = true;
     return send_lost_uplink();
   }
@@ -776,6 +811,7 @@ boolean send_uplink(void) {
     // Been lost a long time.  Can't tell if we're moving.
     need_light_sleep = true;
     need_deep_sleep = true;
+    return false;
   }
 
   // Shouldn't happen, but if it does.. can't compute distance
@@ -801,19 +837,17 @@ boolean send_uplink(void) {
     return false;
 
   // Set tx interval based on time since last movement.
-  if (now - last_moved_ms > SLEEP_WAIT_S * 1000) {
-    if (battery_mv > USB_POWER_VOLTAGE * 1000) {
-      tx_time_ms = rest_time_ms;  // Don't sleep on USB power
-      need_light_sleep = true;
-      need_deep_sleep = false;
-    } else {
-      tx_time_ms = sleep_time_ms;  // Slowest interval
-      need_light_sleep = true;
-      need_deep_sleep = true;  // Turn off GPS between checks
-    }
-  } else if (now - last_moved_ms > REST_WAIT_S * 1000) {
-    need_light_sleep = true;
+  if (battery_mv > USB_POWER_VOLTAGE * 1000) {
+    tx_time_ms = rest_time_ms;  // Don't slow down on USB power
+    need_light_sleep = false;   // Don't blank screen
     need_deep_sleep = false;
+  } else if (now - last_moved_ms > SLEEP_WAIT_S * 1000) {
+    tx_time_ms = sleep_time_ms;  // Slowest interval
+    need_light_sleep = true;
+    need_deep_sleep = true;  // Turn off GPS between checks
+  } else if (now - last_moved_ms > REST_WAIT_S * 1000) {
+    need_light_sleep = true;  // Parked or stationary
+    need_deep_sleep = false;  // Keep GPS on
     tx_time_ms = rest_time_ms;
   } else {
     // We recently moved.. keep the update rate high
@@ -822,7 +856,7 @@ boolean send_uplink(void) {
     need_deep_sleep = false;
   }
 
-  // Override
+  // User Override
   if (stay_on) {
     need_light_sleep = false;
     need_deep_sleep = false;
@@ -844,6 +878,7 @@ boolean send_uplink(void) {
     return false;  // Nothing to do, go home early
   }
 
+  appPort = FPORT_MAPPER;
   if (!prepare_map_uplink(appPort))  // Don't send bad data
     return false;
 
