@@ -10,7 +10,10 @@ improvements from https://github.com/hkicko/CubeCell-GPS-Helium-Mapper
 
 ## Note on hardware
 If you have not yet bought any Helium Mapper hardware, consider the LilyGo TTGO T-Beam instead of the Heltec CubeCell.
-The cost is similar, but the Heltec uses **closed-source binaries** in their Platform libraries while TTGO is open-source with ESP32.  The TTGO also has a superior GPS antenna, buttons, WiFi, Bluetooth, and a better power manager.  The Heltec CubeCell is smaller and lower power in sleep.
+The cost is similar, but the Heltec uses **closed-source binaries** in their Platform libraries while TTGO is open-source with ESP32.  The TTGO also has a superior GPS antenna, more buttons, WiFi, Bluetooth, and a power management IC.  The Heltec CubeCell is physically smaller and lower power in sleep.  Study the tradeoffs.
+
+### CubeCell Version
+Heltec has released multiple versions of the CubeCell GPS units.  This software works only with the `CubeCell GPS 6502 v1.1`.  You can see the different versions [here](https://heltec-automation-docs.readthedocs.io/en/latest/cubecell/dev-board/htcc-ab02s/hardware_update_log.html#v1-1).  The v1.1 has been for sale since early 2021, and has an AIR530Z GPS module.  If you have one of the older 2020 boards, then this build won't work on it.
 
 ## Usage
 The CubeCell only has one User Button, so a short press steps to the next menu entry, and a long press selects that entry.

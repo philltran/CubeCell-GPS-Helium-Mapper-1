@@ -11,6 +11,8 @@
  * Apologies for inconsistent style and naming; there were many hands in this code and Heltec has quite the Platform library.
  *
  */
+#warning "Warnings are disabled by Heltec.  Thanks?"
+
 #include "Arduino.h"
 #include "GPS_Air530Z.h"      // Forsaken Heltec packed-in library
 #include "HT_DisplayFonts.h"  // For Arial
@@ -95,34 +97,56 @@ static TimerEvent_t BatteryUpdateTimer;
 static TimerEvent_t ScreenUpdateTimer;
 static TimerEvent_t KeyDownTimer;
 static TimerEvent_t MenuIdleTimer;
+static TimerEvent_t DeepSleepTimer;
+static TimerEvent_t ScreenOnTimer;
 
-float min_dist_moved = MIN_DIST_M;
-uint32_t max_time_ms = MAX_TIME_S * 1000;
+float min_dist_moved = MIN_DIST_M;             // Meters of movement that count as moved
+uint32_t max_time_ms = MAX_TIME_S * 1000;      // Time interval of Map uplinks
+uint32_t rest_time_ms = REST_TIME_S * 1000;    // slower time interval (screen off)
+uint32_t sleep_time_ms = SLEEP_TIME_S * 1000;  // slowest time interval (deep sleep)
+uint32_t tx_time_ms = max_time_ms;             // The currently active send interval
 
+// Deadzone (no uplink) location and radius
 double deadzone_lat = DEADZONE_LAT;
 double deadzone_lon = DEADZONE_LON;
 double deadzone_radius_m = DEADZONE_RADIUS_M;
+boolean in_deadzone = false;
 
-boolean in_menu = false;
-boolean justSendNow = false;
+boolean in_menu = false;         // Menu currently displayed?
+const char *menu_prev;           // Previous menu name
+const char *menu_cur;            // Highlighted menu name
+const char *menu_next;           // Next menu name
+boolean is_highlighted = false;  // highlight the current menu entry
+int menu_entry = 0;              // selected item
 
-const char *menu_prev;  // Previous menu name
-const char *menu_cur;   // Highlighted menu name
-const char *menu_next;  // Next menu name
-boolean is_highlighted = false;
-int menu_entry = 0;
+boolean justSendNow = false;  // Send an uplink right now
 
-boolean key_down = false;
-uint32_t keyDownTime;
-void userKeyIRQ(void);
-boolean long_press = false;
+boolean key_down = false;    // User Key pressed right now?
+uint32_t keyDownTime;        // how long was it pressed for
+void userKeyIRQ(void);       // (soft) interrupt handler for key press
+boolean long_press = false;  // did this count as a Long press?
 
-uint32_t last_fix = 0;
-double last_send_lat, last_send_lon;
-uint32_t last_send_ms;
-boolean first_send = true;
+uint32_t last_fix_ms = 0;             // When did we last get a good GPS fix?
+double last_send_lat, last_send_lon;  // Last coordinates sent
+uint32_t last_send_ms;                // time of last uplink
+boolean first_send = true;            // is this our first uplink?
 
-char buffer[40];  // Scratch string display buffer
+boolean need_light_sleep = false;  // Should we be in low-power state?
+boolean need_deep_sleep = false;   // Should we be in lowest-power state?
+boolean in_light_sleep = false;    // Are we presently in low-power
+boolean in_deep_sleep = false;     // Are we in deepest sleep?
+boolean hold_screen_on = false;    // Are we holding the screen on from key press?
+boolean stay_on = false;           // Has the user asked the screen to STAY on?
+
+boolean is_gps_lost = false;    // No GPS Fix?
+uint32_t last_lost_gps_ms = 0;  // When did we last cry about no GPS
+uint32_t last_moved_ms = 0;     // When did we last notice significant movement
+
+uint16_t battery_mv; // Last measured battery voltage in millivolts
+
+char buffer[40];  // Scratch string buffer for display strings
+
+void onDeepSleepTimer(void);
 
 // SK6812 (WS2812).  DIN is IO13/GP13/Pin45
 void testRGB(void) {
@@ -244,13 +268,15 @@ void draw_screen(void);
 
 void onScreenUpdateTimer(void) {
   draw_screen();
-  TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
+  TimerReset(&ScreenUpdateTimer);
   TimerStart(&ScreenUpdateTimer);
 }
 
 void screen_print(const char *text, uint8_t x, uint8_t y, uint8_t alignment) {
-  disp->setTextAlignment((DISPLAY_TEXT_ALIGNMENT)alignment);
-  disp->drawString(x, y, text);
+  if (isDisplayOn) {
+    disp->setTextAlignment((DISPLAY_TEXT_ALIGNMENT)alignment);
+    disp->drawString(x, y, text);
+  }
 }
 
 void screen_print(const char *text, uint8_t x, uint8_t y) {
@@ -258,13 +284,15 @@ void screen_print(const char *text, uint8_t x, uint8_t y) {
 }
 
 void screen_print(const char *text) {
-  Serial.printf(">>> %s\n", text);
+  Serial.printf(">>> %s", text);
 
-  disp->print(text);
-  if (_screen_line + 8 > disp->getHeight()) {
-    // scroll
+  if (isDisplayOn) {
+    disp->print(text);
+    if (_screen_line + 8 > disp->getHeight()) {
+      // scroll
+    }
+    _screen_line += 8;
   }
-  _screen_line += 8;
 }
 
 void screen_setup() {
@@ -278,9 +306,40 @@ void screen_setup() {
 
 uint32_t gps_start_time;
 
-void start_gps() {
+void start_gps(void) {
   Serial.println("Starting GPS:");
   AirGPS.begin(115200);  // Faster messages; less CPU, more idle.
+  AirGPS.setmode(MODE_GPS_BEIDOU_GLONASS);
+  AirGPS.setNMEA(NMEA_RMC | NMEA_GGA);  // Eliminate unused message traffic like SV
+
+#if 1
+  // GPSSerial.write("$PCAS02,500*1A\r\n"); /* 500mS updates */
+  GPSSerial.write("$PCAS02,1000*2E\r\n"); /* 1S updates */
+  GPSSerial.flush();
+  delay(10);
+#endif
+
+  // Adjust the Green 1pps LED to have shorter blinks.
+  const uint8_t cmdbuf[] = {0xBA, 0xCE, 0x10, 0x00, 0x06, 0x03, 0x40, 0x42, 0x0F, 0x00, 0x10, 0x27, 0x00,
+                            0x00, 0x03, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x63, 0x69, 0x15, 0x0B};
+  /* CFG-TX Time Pulse: 10mS width (vs 100), only if fixed, UTC Time, Automatic source */
+  GPSSerial.write(cmdbuf, sizeof(cmdbuf));
+  GPSSerial.flush();
+  delay(10);
+
+  gps_start_time = millis();
+}
+
+void fast_start_gps() {
+  Serial.println("(Wake GPS)");
+  pinMode(GPIO14, OUTPUT);
+  digitalWrite(GPIO14, LOW);
+  GPSSerial.begin(115200);  // Faster messages; less CPU, more idle.
+  gps_start_time = millis();
+  while (GPS.getNMEA() == "0") {
+    if (millis() - gps_start_time > SLEEP_GPS_TIMEOUT_S * 1000)
+      return;
+  }
   AirGPS.setmode(MODE_GPS_BEIDOU_GLONASS);
   AirGPS.setNMEA(NMEA_RMC | NMEA_GGA);  // Eliminate unused message traffic like SV
 
@@ -316,10 +375,10 @@ void update_gps() {
   if (GPS.location.isValid() && GPS.location.isUpdated() && GPS.time.isValid() && GPS.date.isValid() && GPS.satellites.value() > 3) {
     // Serial.printf(" %02d:%02d:%02d.%02d\n", GPS.time.hour(), GPS.time.minute(), GPS.time.second(), GPS.time.centisecond());
     // printGPSInfo();
-    last_fix = millis();
+    last_fix_ms = millis();
     if (firstfix) {
       firstfix = false;
-      snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix - gps_start_time) / 1000);
+      snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix_ms - gps_start_time) / 1000);
       screen_print(buffer);
       printGPSInfo();
     }
@@ -331,9 +390,15 @@ void stopGPS() {
   AirGPS.end();
 }
 
-uint16_t battery_mv;
+/* In Heltec's brilliance, they put the User Key button input on top of the Battery ADC with a complicated switch,
+ * instead of using one of the many other GPIOs that would not conflict at all.  Because of this, we should
+ * ignore fake keypress inputs while sampling the battery ADC.  The getBatteryVoltage() call will also turn the
+ * ADC Control switch over to Battery with pinMode(VBAT_ADC_CTL,OUTPUT) and restore it after.
+ * Note that battery measurement takes significant time, so should be done infrequently and outside of any critical
+ * LoRa timing.
+ */
 void update_battery_mv(void) {
-  detachInterrupt(USER_KEY);
+  detachInterrupt(USER_KEY);  // ignore phantom button pushes
   battery_mv = getBatteryVoltage() * VBAT_CORRECTION;
   attachInterrupt(USER_KEY, userKeyIRQ, BOTH);
   Serial.printf("Bat: %d mV\n", battery_mv);
@@ -341,7 +406,7 @@ void update_battery_mv(void) {
 
 void onBatteryUpdateTimer(void) {
   update_battery_mv();
-  TimerSetValue(&BatteryUpdateTimer, BATTERY_UPDATE_RATE_MS);
+  TimerReset(&BatteryUpdateTimer);
   TimerStart(&BatteryUpdateTimer);
 }
 
@@ -432,6 +497,8 @@ void menu_power_off(void) {
   TimerStop(&BatteryUpdateTimer);
   TimerStop(&ScreenUpdateTimer);
   TimerStop(&MenuIdleTimer);
+  TimerStop(&DeepSleepTimer);
+  TimerStop(&ScreenOnTimer);
 
   // Must Reset to exit
   while (1) lowPowerHandler();
@@ -463,16 +530,22 @@ void menu_deadzone_here(void) {
     deadzone_lon = GPS.location.lng();
   }
 }
+void menu_stay_on(void) {
+  stay_on = !stay_on;
+}
 
-struct menu_item menu[] = {
-    {"Send Now", menu_send_now},  {"Power Off", menu_power_off}, {"Distance +10", menu_distance_plus},  {"Distance -10", menu_distance_minus},
-    {"Time +60", menu_time_plus}, {"Time -60", menu_time_minus}, {"Deadzone Here", menu_deadzone_here}, {"USB GPS", menu_gps_passthrough},
-};
+struct menu_item menu[] = {{"Send Now", menu_send_now},           {"Power Off", menu_power_off},     {"Distance +10", menu_distance_plus},
+                           {"Distance -10", menu_distance_minus}, {"Time +60", menu_time_plus},      {"Time -60", menu_time_minus},
+                           {"Deadzone Here", menu_deadzone_here}, {"USB GPS", menu_gps_passthrough}, {"Stay ON", menu_stay_on}};
 #define MENU_ENTRIES (sizeof(menu) / sizeof(menu[0]))
 
 void onMenuIdleTimer(void) {
   in_menu = false;
   is_highlighted = false;
+}
+
+void onScreenOnTimer(void) {
+  hold_screen_on = false;
 }
 
 void menu_press(void) {
@@ -486,7 +559,7 @@ void menu_press(void) {
   menu_next = menu[(menu_entry + 1) % MENU_ENTRIES].name;
 
   draw_screen();
-  TimerSetValue(&MenuIdleTimer, MENU_TIMEOUT_MS);
+  TimerReset(&MenuIdleTimer);
   TimerStart(&MenuIdleTimer);
 }
 
@@ -517,10 +590,10 @@ void userKeyIRQ(void) {
   if (!key_down && digitalRead(USER_KEY) == LOW) {
     // Key Pressed
     key_down = true;
-    keyDownTime = millis();
-    TimerSetValue(&KeyDownTimer, LONG_PRESS_MS);
-    TimerStart(&KeyDownTimer);
     long_press = false;
+    keyDownTime = millis();
+    TimerReset(&KeyDownTimer);
+    TimerStart(&KeyDownTimer);
   }
 
   if (key_down && digitalRead(USER_KEY) == HIGH) {
@@ -537,9 +610,12 @@ void userKeyIRQ(void) {
     Serial.printf("[Key Pressed %lu ms.]\n", press_ms);
 #endif
   }
-
-  // Is this kosher?
   TimerReset(&MenuIdleTimer);
+
+  hold_screen_on = true;
+  TimerStop(&ScreenOnTimer);
+  TimerReset(&ScreenOnTimer);
+  TimerStart(&ScreenOnTimer);
 }
 
 void gps_time(char *buffer, uint8_t size) {
@@ -575,7 +651,7 @@ void screen_header(void) {
   disp->drawXbm(disp->getWidth() - SATELLITE_IMAGE_WIDTH, 0, SATELLITE_IMAGE_WIDTH, SATELLITE_IMAGE_HEIGHT, SATELLITE_IMAGE);
 
   // Second status row:
-  snprintf(buffer, sizeof(buffer), "%us   %dm", max_time_ms / 1000, (int)min_dist_moved);
+  snprintf(buffer, sizeof(buffer), "%us   %dm  %c %c", tx_time_ms / 1000, (int)min_dist_moved, in_deadzone ? 'D' : ' ', stay_on ? 'S' : ' ');
   disp->setTextAlignment(TEXT_ALIGN_LEFT);
   disp->drawString(0, 12, buffer);
 
@@ -626,9 +702,9 @@ void setup() {
   enableAt();
 #endif
 
+  isDisplayOn = 1;
   display.init();  // displayMcuInit() will init the display, but if we want to
                    // show our logo before that, we need to init ourselves.
-  isDisplayOn = 1;
   displayLogoAndMsg(APP_VERSION, 100);
 
   start_gps();  // GPS takes the longest to settle.
@@ -649,31 +725,60 @@ void setup() {
   screen_setup();
   screen_print(APP_VERSION "\n");
 
-  TimerInit(&BatteryUpdateTimer, onBatteryUpdateTimer);
-  onBatteryUpdateTimer();
-
-  TimerInit(&ScreenUpdateTimer, onScreenUpdateTimer);
-  onScreenUpdateTimer();
-
   TimerInit(&KeyDownTimer, onKeyDownTimer);
+  TimerSetValue(&KeyDownTimer, LONG_PRESS_MS);
 
   TimerInit(&MenuIdleTimer, onMenuIdleTimer);
+  TimerSetValue(&MenuIdleTimer, MENU_TIMEOUT_MS);
+
+  TimerInit(&DeepSleepTimer, onDeepSleepTimer);
+  TimerSetValue(&DeepSleepTimer, SLEEP_TIME_S * 1000);
+
+  TimerInit(&ScreenOnTimer, onScreenOnTimer);
+  TimerSetValue(&ScreenOnTimer, SCREEN_ON_TIME_MS);
+
+  TimerInit(&BatteryUpdateTimer, onBatteryUpdateTimer);
+  TimerSetValue(&BatteryUpdateTimer, BATTERY_UPDATE_RATE_MS);
+  TimerStart(&BatteryUpdateTimer);
+
+  TimerInit(&ScreenUpdateTimer, onScreenUpdateTimer);
+  TimerSetValue(&ScreenUpdateTimer, SCREEN_UPDATE_RATE_MS);
+  TimerStart(&ScreenUpdateTimer); // Let's Go!
+  }
+
+boolean send_lost_uplink() {
+  uint32 now = millis();
+  Serial.printf("Lost GPS %ds ago\n", (now - last_fix_ms) / 1000);
+  last_lost_gps_ms = now;
+  // TODO Send Lost GPS uplink
+  return true;
 }
 
-#if 0
-      // only if screen on mode (otherwise the dispaly object is
-      // not initialized and calling methods from it will cause
-      // a crash)
-      if (0 && !screenOffMode && isDisplayOn) {
-  
-      }
-
-#endif
-
-boolean send_mapper_uplink(void) {
-  boolean in_deadzone;
+boolean send_uplink(void) {
   uint32_t now = millis();
 
+  if (is_gps_lost && (now - last_fix_ms < GPS_LOST_WAIT_S * 1000)) {
+    // Recovered
+    screen_print("Found GPS\n");
+    is_gps_lost = false;
+  }
+  if (!is_gps_lost && (now - last_fix_ms > GPS_LOST_WAIT_S * 1000)) {
+    // Haven't seen GPS in a while.  Send a non-Mapper packet
+    screen_print("Lost GPS\n");
+    is_gps_lost = true;
+    return send_lost_uplink();
+  }
+  if (is_gps_lost && (now - last_lost_gps_ms) > GPS_LOST_TIME_S * 1000) {
+    // Still Lost.  Continue crying about it
+    return send_lost_uplink();
+  }
+  if (is_gps_lost && (now - last_fix_ms) > SLEEP_WAIT_S * 1000) {
+    // Been lost a long time.  Can't tell if we're moving.
+    need_light_sleep = true;
+    need_deep_sleep = true;
+  }
+
+  // Shouldn't happen, but if it does.. can't compute distance
   if (!GPS.location.isValid())
     return false;
 
@@ -682,13 +787,46 @@ boolean send_mapper_uplink(void) {
 
   double dist_moved = GPS.distanceBetween(last_send_lat, last_send_lon, lat, lon);
   double deadzone_dist = GPS.distanceBetween(deadzone_lat, deadzone_lon, lat, lon);
-
   in_deadzone = (deadzone_dist <= deadzone_radius_m);
 
-  Serial.printf("[%ds, %dm, %c]\n", (now - last_send_ms) / 1000, (int32_t)dist_moved, in_deadzone ? 'D' : '-');
+  Serial.printf("[Time %d / %ds, Moved %dm in %ds %c]\n", (now - last_send_ms) / 1000, tx_time_ms / 1000, (int32_t)dist_moved, (now - last_moved_ms) / 1000,
+                in_deadzone ? 'D' : '-');
 
+  // Deadzone means we don't send unless asked
   if (in_deadzone && !justSendNow)
     return false;
+
+  // Don't send any mapper packets for time/distance without GPS fix
+  if (is_gps_lost)
+    return false;
+
+  // Set tx interval based on time since last movement.
+  if (now - last_moved_ms > SLEEP_WAIT_S * 1000) {
+    if (battery_mv > USB_POWER_VOLTAGE * 1000) {
+      tx_time_ms = rest_time_ms;  // Don't sleep on USB power
+      need_light_sleep = true;
+      need_deep_sleep = false;
+    } else {
+      tx_time_ms = sleep_time_ms;  // Slowest interval
+      need_light_sleep = true;
+      need_deep_sleep = true;  // Turn off GPS between checks
+    }
+  } else if (now - last_moved_ms > REST_WAIT_S * 1000) {
+    need_light_sleep = true;
+    need_deep_sleep = false;
+    tx_time_ms = rest_time_ms;
+  } else {
+    // We recently moved.. keep the update rate high
+    tx_time_ms = max_time_ms;
+    need_light_sleep = false;
+    need_deep_sleep = false;
+  }
+
+  // Override
+  if (stay_on) {
+    need_light_sleep = false;
+    need_deep_sleep = false;
+  }
 
   char because = '?';
   if (justSendNow) {
@@ -697,9 +835,9 @@ boolean send_mapper_uplink(void) {
     because = '>';
   } else if (dist_moved > min_dist_moved) {
     Serial.println("** MOVING");
-    // last_moved_millis = now;
+    last_moved_ms = now;
     because = 'D';
-  } else if (now - last_send_ms > max_time_ms) {
+  } else if (now - last_send_ms > tx_time_ms) {
     Serial.println("** TIME");
     because = 'T';
   } else {
@@ -708,12 +846,6 @@ boolean send_mapper_uplink(void) {
 
   if (!prepare_map_uplink(appPort))  // Don't send bad data
     return false;
-
-#if 0
-  if (!screenOffMode) {
-    LoRaWAN.displaySending();
-  }
-#endif
 
   // The first distance-moved is crazy, since has no origin.. don't put it on screen.
   if (dist_moved > 1000000)
@@ -724,12 +856,88 @@ boolean send_mapper_uplink(void) {
   // Serial.print(buffer);
   screen_print(buffer);
 
-  LoRaWAN.send();
+  // Serial.println("send..");
   last_send_ms = now;
+  LoRaWAN.send();
+  // Serial.println("..sent");
+
+  return true;
+}
+
+boolean deep_sleep_wake = false;
+uint32_t wake_count = 0;
+void onDeepSleepTimer(void) {
+  // Serial.println("WAKE Time");
+  deep_sleep_wake = true;
 }
 
 void loop() {
   static uint32_t lora_start_time;
+  extern bool wakeByUart;  // Declared in binary-only AT_Command.o!
+
+  if (need_light_sleep && !in_light_sleep && !in_menu && !hold_screen_on) {
+    Serial.println("ENTER light sleep");
+    in_light_sleep = true;
+    TimerStop(&ScreenUpdateTimer);
+    VextOFF();  // No RGB LED or OLED power
+    display.stop();
+    isDisplayOn = false;
+  }
+  if (in_light_sleep && (!need_light_sleep || in_menu || hold_screen_on)) {
+    Serial.println("EXIT light sleep");
+    in_light_sleep = false;
+    VextON();
+    isDisplayOn = true;
+    display.init();
+    screen_setup();
+    draw_screen();
+    TimerReset(&ScreenUpdateTimer);
+    TimerStart(&ScreenUpdateTimer);
+  }
+
+  if (need_deep_sleep && !in_deep_sleep && !in_menu && !hold_screen_on) {
+    Serial.println("SleepNow[");
+    Serial.println();
+    Serial.flush();
+    in_deep_sleep = true;
+    AirGPS.end();
+    TimerStop(&BatteryUpdateTimer);
+
+    /* Set a Timer to wake */
+    TimerReset(&DeepSleepTimer);
+    TimerStart(&DeepSleepTimer);
+
+    deep_sleep_wake = false;
+    wakeByUart = false;
+    wake_count = 0;
+    do {
+      lowPowerHandler();  // SLEEP
+      // but it exits for no visible reason
+      wake_count++;
+    } while (!deep_sleep_wake);
+
+    TimerStop(&DeepSleepTimer);
+
+    Serial.printf("]up; Woke %d times\n", wake_count);
+    in_deep_sleep = false;
+    fast_start_gps();
+    last_fix_ms = 0;
+    uint32_t gps_start_time = millis();
+    do {
+      update_gps();
+    } while (!last_fix_ms && (millis() - gps_start_time) < SLEEP_GPS_TIMEOUT_S * 1000);
+    if (!last_fix_ms)
+      Serial.println("(Woke but no Fix)");
+    else {
+      Serial.print("Wake fix @ ");
+      gps_time(buffer, sizeof(buffer));
+      Serial.println(buffer);
+    }
+    TimerReset(&BatteryUpdateTimer);
+    TimerStart(&BatteryUpdateTimer);
+  }
+
+  // Serial.print(".");
   update_gps();  // Digest any pending bytes to update position
 
   switch (deviceState) {
@@ -746,20 +954,21 @@ void loop() {
       break;
     }
     case DEVICE_STATE_JOIN: {
-      //Serial.print("[JOIN] ");
+      // Serial.print("[JOIN] ");
       LoRaWAN.displayJoining();
       LoRaWAN.join();
       break;
     }
     case DEVICE_STATE_SEND: {
+      // Serial.print("[SEND] ");
       if (first_send) {
         first_send = false;
         snprintf(buffer, sizeof(buffer), "Joined Helium: %d sec\n", (millis() - lora_start_time) / 1000);
         screen_print(buffer);
         justSendNow = true;
       }
-      if (!send_mapper_uplink())
-        deviceState = DEVICE_STATE_CYCLE;  // take a break;
+      send_uplink();
+      deviceState = DEVICE_STATE_CYCLE;  // take a break if we sent or not.
       break;
     }
     case DEVICE_STATE_CYCLE: {
@@ -769,14 +978,11 @@ void loop() {
       break;
     }
     case DEVICE_STATE_SLEEP: {
-      extern bool wakeByUart;  // Declared in binary-only AT_Command.o!
-      wakeByUart = true;       // Should awake before GPS activity, but just in case..
-      // Serial.end();
-      // GPSSerial.end();
+      // Serial.print("[SLEEP] ");
+      wakeByUart = true;  // Should awake before GPS activity, but just in case..
       LoRaWAN.sleep();  // Causes serial port noise
-      // Serial.begin(115200);
-      // GPSSerial.begin(115200);
       break;
+
     }
     default: {
       Serial.printf("Surprising state: %d\n", deviceState);
