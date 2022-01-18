@@ -25,14 +25,19 @@
 
 #define USB_POWER_VOLTAGE 9.9      // Above this voltage, assume we have unlimited power (4.1 is typical)
 #define UNKNOWN_LOCATION_UPLINK 1  // If no GPS reception, send a non-Mapper Uplink packet anyway
-#define GPS_LOST_WAIT_S 30         //(10 * 60)  // How long after losing GPS do we send a lost packet?
-#define GPS_LOST_TIME_S 45         //(45 * 60)  // How often to send Lost GPS packets?
+#define GPS_LOST_WAIT_S (5 * 60)   // How long after losing GPS do we send a lost packet?
+#define GPS_LOST_TIME_S (15 * 60)  // How often to send Lost GPS packets?
 
 // Deadzone defines a circular area where no map packets will originate.
 // Set Radius to zero to disable, or leave it enabled to select center position from menu.
 // (Thanks to @Woutch for the name)
+// Set it here or in your platformio.ini
+#ifndef DEADZONE_LAT
 #define DEADZONE_LAT 34.5678
+#endif
+#ifndef DEADZONE_LON
 #define DEADZONE_LON -123.4567
+#endif
 #define DEADZONE_RADIUS_M 500  // meters
 
 // -----------------------------------------------------------------------------
