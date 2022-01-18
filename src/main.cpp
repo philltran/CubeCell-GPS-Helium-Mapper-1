@@ -758,7 +758,7 @@ boolean send_lost_uplink() {
 
   uint16_t batteryVoltage = ((float_t)((float_t)((float_t)battery_mv * VBAT_CORRECTION) / 10) + 0.5);
 
-  uint16_t lost_minutes = MAX(0xFFFF, (now - last_fix_ms) / 1000 / 60);
+  uint16_t lost_minutes = MIN(0xFFFF, (now - last_fix_ms) / 1000 / 60);
 
   appPort = FPORT_LOST_GPS;
   appDataSize = 0;
