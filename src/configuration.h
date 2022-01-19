@@ -23,8 +23,7 @@
 #define SLEEP_GPS_TIMEOUT_S 60  // How long to wait for a GPS fix each time we wake
 #define SLEEP_LOW_VOLTAGE 3.4   // Below this voltage, stay in deep sleep
 
-#define USB_POWER_VOLTAGE 9.9      // Above this voltage, assume we have unlimited power (4.1 is typical)
-#define UNKNOWN_LOCATION_UPLINK 1  // If no GPS reception, send a non-Mapper Uplink packet anyway
+#define USB_POWER_VOLTAGE 4.15      // Above this voltage, assume we have unlimited power (4.1 is typical)
 #define GPS_LOST_WAIT_S (5 * 60)   // How long after losing GPS do we send a lost packet?
 #define GPS_LOST_TIME_S (15 * 60)  // How often to send Lost GPS packets?
 

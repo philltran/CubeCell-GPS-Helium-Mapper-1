@@ -11,8 +11,6 @@
  * Apologies for inconsistent style and naming; there were many hands in this code and Heltec has quite the Platform library.
  *
  */
-#warning "Warnings are disabled by Heltec.  Thanks?"
-
 #include "Arduino.h"
 #include "GPS_Air530Z.h"      // Forsaken Heltec packed-in library
 #include "HT_DisplayFonts.h"  // For Arial
@@ -128,7 +126,7 @@ uint32_t last_fix_ms = 0;    // When did we last get a good GPS fix?
 double last_send_lat = 0.0;  // Last sent Latitude
 double last_send_lon = 0.0;  // Last sent Longitude
 uint32_t last_send_ms;       // time of last uplink
-boolean first_send = true;   // is this our first uplink?
+boolean is_joined = false;   // True after Join complete
 
 boolean need_light_sleep = false;  // Should we be in low-power state?
 boolean need_deep_sleep = false;   // Should we be in lowest-power state?
@@ -377,7 +375,7 @@ void update_gps() {
     last_fix_ms = millis();
     if (firstfix) {
       firstfix = false;
-      snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix_ms - gps_start_time) / 1000);
+      snprintf(buffer, sizeof(buffer), "GPS fix: %ld sec\n", (last_fix_ms - gps_start_time) / 1000);
       screen_print(buffer);
       printGPSInfo();
     }
@@ -412,7 +410,7 @@ void onBatteryUpdateTimer(void) {
 /* Populate appData/appDataSize with Mapper frame */
 bool prepare_map_uplink(uint8_t port) {
   uint32_t lat, lon;
-  int alt, course, speed, hdop, sats;
+  int alt, speed, sats;
 
   unsigned char *puc;
 
@@ -428,10 +426,10 @@ bool prepare_map_uplink(uint8_t port) {
   lon = ((last_send_lon + 180) / 360.0) * 16777215;
 
   alt = (uint16_t)GPS.altitude.meters();
-  course = GPS.course.deg();
+  // course = GPS.course.deg();
   speed = (uint16_t)GPS.speed.kmph();
   sats = GPS.satellites.value();
-  hdop = GPS.hdop.hdop();
+  // hdop = GPS.hdop.hdop();
 
   uint16_t batteryVoltage = ((float_t)((float_t)((float_t)battery_mv * VBAT_CORRECTION) / 10) + 0.5);
 
@@ -623,6 +621,7 @@ void gps_time(char *buffer, uint8_t size) {
 
 void screen_header(void) {
   uint32_t sats;
+  uint32_t now = millis();
 
   sats = GPS.satellites.value();
 
@@ -650,7 +649,15 @@ void screen_header(void) {
   disp->drawXbm(disp->getWidth() - SATELLITE_IMAGE_WIDTH, 0, SATELLITE_IMAGE_WIDTH, SATELLITE_IMAGE_HEIGHT, SATELLITE_IMAGE);
 
   // Second status row:
-  snprintf(buffer, sizeof(buffer), "%us   %dm  %c %c", tx_time_ms / 1000, (int)min_dist_moved, in_deadzone ? 'D' : ' ', stay_on ? 'S' : ' ');
+  snprintf(buffer, sizeof(buffer), "%lus / %lus   %dm  %c%c%c%c\n",
+           (now - last_send_ms) / 1000,                        // Time since last send
+           tx_time_ms / 1000,                                  // Interval Time
+           (int)min_dist_moved,                                // Interval Distance
+           battery_mv > USB_POWER_VOLTAGE * 1000 ? 'U' : '-',  // U for Unlimited Power (USB)
+           stay_on ? 'S' : '-',                                // S for Screen Stay ON
+           in_deadzone ? 'D' : '-',                            // D for Deadzone
+           !is_joined ? 'X' : '-'                              // X for Not Joined Yet
+  );
   disp->setTextAlignment(TEXT_ALIGN_LEFT);
   disp->drawString(0, 12, buffer);
 
@@ -747,7 +754,7 @@ void setup() {
 
 boolean send_lost_uplink() {
   uint32 now = millis();
-  Serial.printf("Lost GPS %ds ago\n", (now - last_fix_ms) / 1000);
+  Serial.printf("Lost GPS %lds ago\n", (now - last_fix_ms) / 1000);
   unsigned char *puc;
 
   // Use last-known location; might be zero
@@ -779,13 +786,13 @@ boolean send_lost_uplink() {
   puc = (unsigned char *)(&lost_minutes);
   appData[appDataSize++] = puc[1];
   appData[appDataSize++] = puc[0];
-  
-  snprintf(buffer, sizeof(buffer), "%d NO-GPS %dmin\n", UpLinkCounter, lost_minutes);
+
+  snprintf(buffer, sizeof(buffer), "%ld NO-GPS %dmin\n", UpLinkCounter, lost_minutes);
   screen_print(buffer);
 
   last_lost_gps_ms = now;
   LoRaWAN.send();
-  
+
   return true;
 }
 
@@ -825,8 +832,14 @@ boolean send_uplink(void) {
   double deadzone_dist = GPS.distanceBetween(deadzone_lat, deadzone_lon, lat, lon);
   in_deadzone = (deadzone_dist <= deadzone_radius_m);
 
-  Serial.printf("[Time %d / %ds, Moved %dm in %ds %c]\n", (now - last_send_ms) / 1000, tx_time_ms / 1000, (int32_t)dist_moved, (now - last_moved_ms) / 1000,
+#if 1
+  Serial.printf("[Time %ld / %lds, Moved %ldm in %lds %c]\n",
+                (now - last_send_ms) / 1000,   // Time
+                tx_time_ms / 1000,             // interval
+                (int32_t)dist_moved,           // moved
+                (now - last_moved_ms) / 1000,  // last movement
                 in_deadzone ? 'D' : '-');
+#endif
 
   // Deadzone means we don't send unless asked
   if (in_deadzone && !justSendNow)
@@ -887,7 +900,7 @@ boolean send_uplink(void) {
     dist_moved = 0;
 
   printGPSInfo();
-  snprintf(buffer, sizeof(buffer), "%d %c %ds %dm\n", UpLinkCounter, because, (now - last_send_ms) / 1000, (int32_t)dist_moved);
+  snprintf(buffer, sizeof(buffer), "%ld %c %lds %ldm\n", UpLinkCounter, because, (now - last_send_ms) / 1000, (int32_t)dist_moved);
   // Serial.print(buffer);
   screen_print(buffer);
 
@@ -953,7 +966,7 @@ void loop() {
 
     TimerStop(&DeepSleepTimer);
 
-    Serial.printf("]up; Woke %d times\n", wake_count);
+    Serial.printf("]up; Woke %ld times\n", wake_count);
     in_deep_sleep = false;
     fast_start_gps();
     last_fix_ms = 0;
@@ -996,9 +1009,9 @@ void loop() {
     }
     case DEVICE_STATE_SEND: {
       // Serial.print("[SEND] ");
-      if (first_send) {
-        first_send = false;
-        snprintf(buffer, sizeof(buffer), "Joined Helium: %d sec\n", (millis() - lora_start_time) / 1000);
+      if (!is_joined) {
+        is_joined = true;
+        snprintf(buffer, sizeof(buffer), "Joined Helium: %ld sec\n", (millis() - lora_start_time) / 1000);
         screen_print(buffer);
         justSendNow = true;
       }
