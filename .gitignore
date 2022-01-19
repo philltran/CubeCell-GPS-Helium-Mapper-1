@@ -5,3 +5,4 @@
 .vscode/ipch
 pio.map
 output.map
+my.platformio.ini
