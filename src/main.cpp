@@ -375,7 +375,7 @@ void update_gps() {
     last_fix_ms = millis();
     if (firstfix) {
       firstfix = false;
-      snprintf(buffer, sizeof(buffer), "GPS fix: %ld sec\n", (last_fix_ms - gps_start_time) / 1000);
+      snprintf(buffer, sizeof(buffer), "GPS fix: %d sec\n", (last_fix_ms - gps_start_time) / 1000);
       screen_print(buffer);
       printGPSInfo();
     }
@@ -649,7 +649,7 @@ void screen_header(void) {
   disp->drawXbm(disp->getWidth() - SATELLITE_IMAGE_WIDTH, 0, SATELLITE_IMAGE_WIDTH, SATELLITE_IMAGE_HEIGHT, SATELLITE_IMAGE);
 
   // Second status row:
-  snprintf(buffer, sizeof(buffer), "%lus / %lus   %dm  %c%c%c%c\n",
+  snprintf(buffer, sizeof(buffer), "%ds / %ds   %dm  %c%c%c%c\n",
            (now - last_send_ms) / 1000,                        // Time since last send
            tx_time_ms / 1000,                                  // Interval Time
            (int)min_dist_moved,                                // Interval Distance
@@ -754,7 +754,7 @@ void setup() {
 
 boolean send_lost_uplink() {
   uint32 now = millis();
-  Serial.printf("Lost GPS %lds ago\n", (now - last_fix_ms) / 1000);
+  Serial.printf("Lost GPS %ds ago\n", (now - last_fix_ms) / 1000);
   unsigned char *puc;
 
   // Use last-known location; might be zero
@@ -787,7 +787,7 @@ boolean send_lost_uplink() {
   appData[appDataSize++] = puc[1];
   appData[appDataSize++] = puc[0];
 
-  snprintf(buffer, sizeof(buffer), "%ld NO-GPS %dmin\n", UpLinkCounter, lost_minutes);
+  snprintf(buffer, sizeof(buffer), "%d NO-GPS %dmin\n", UpLinkCounter, lost_minutes);
   screen_print(buffer);
 
   last_lost_gps_ms = now;
@@ -833,7 +833,7 @@ boolean send_uplink(void) {
   in_deadzone = (deadzone_dist <= deadzone_radius_m);
 
 #if 1
-  Serial.printf("[Time %ld / %lds, Moved %ldm in %lds %c]\n",
+  Serial.printf("[Time %d / %ds, Moved %dm in %ds %c]\n",
                 (now - last_send_ms) / 1000,   // Time
                 tx_time_ms / 1000,             // interval
                 (int32_t)dist_moved,           // moved
@@ -900,7 +900,7 @@ boolean send_uplink(void) {
     dist_moved = 0;
 
   printGPSInfo();
-  snprintf(buffer, sizeof(buffer), "%ld %c %lds %ldm\n", UpLinkCounter, because, (now - last_send_ms) / 1000, (int32_t)dist_moved);
+  snprintf(buffer, sizeof(buffer), "%d %c %ds %dm\n", UpLinkCounter, because, (now - last_send_ms) / 1000, (int32_t)dist_moved);
   // Serial.print(buffer);
   screen_print(buffer);
 
@@ -966,7 +966,7 @@ void loop() {
 
     TimerStop(&DeepSleepTimer);
 
-    Serial.printf("]up; Woke %ld times\n", wake_count);
+    Serial.printf("]up; Woke %d times\n", wake_count);
     in_deep_sleep = false;
     fast_start_gps();
     last_fix_ms = 0;
@@ -1011,7 +1011,7 @@ void loop() {
       // Serial.print("[SEND] ");
       if (!is_joined) {
         is_joined = true;
-        snprintf(buffer, sizeof(buffer), "Joined Helium: %ld sec\n", (millis() - lora_start_time) / 1000);
+        snprintf(buffer, sizeof(buffer), "Joined Helium: %d sec\n", (millis() - lora_start_time) / 1000);
         screen_print(buffer);
         justSendNow = true;
       }
