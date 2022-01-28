@@ -27,12 +27,12 @@ Air530ZClass GPS;
 // Enable this to activate the auto sleep on no vibration function for the cases when the device is left stationary indoors and GPS generates fake movement so it can't go to sleep
 //#define VIBR_AUTOSLEEP_TIMEOUT 300000
 
-#define GPS_READ_RATE 1000      // How often to read GPS (in ms)
-#define MIN_DIST 25             // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
-#define MAX_GPS_WAIT 660000     // Max time to wait for GPS before going to sleep (in ms)
-#define AUTO_SLEEP_TIMER 300000 // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature.
-#define MENU_IDLE_TIMEOUT 30000 // Auto exit the menu if no button pressed in this amount of ms
-#define VBAT_CORRECTION 1.004   // Edit this for calibrating your battery voltage
+#define GPS_READ_RATE 1000        // How often to read GPS (in ms)
+#define MIN_DIST 25               // Minimum distance in meters from the last sent location before we can send again. A hex is about 340m, divide by this value to get the pings per hex.
+#define MAX_GPS_WAIT 7200000      // Max time to wait for GPS before going to sleep (in ms)
+#define AUTO_SLEEP_TIMER 86400000 // If no movement for this amount of time (in ms), the device will go to sleep. Comment out if you don't want this feature.
+#define MENU_IDLE_TIMEOUT 30000   // Auto exit the menu if no button pressed in this amount of ms
+#define VBAT_CORRECTION 1.004     // Edit this for calibrating your battery voltage
 //#define CAYENNELPP_FORMAT
 
 /*
