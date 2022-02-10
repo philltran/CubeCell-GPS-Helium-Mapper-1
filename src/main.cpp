@@ -1,5 +1,5 @@
 /* Based on the CubeCell GPS example from libraries\LoRa\examples\LoRaWAN\LoRaWAN_Sensors\LoRaWan_OnBoardGPS_Air530\LoRaWan_OnBoardGPS_Air530.ino
- * and on Jas Williams version from https://github.com/jas-williams/CubeCell-Helium-Mapper.git  
+ * and on Jas Williams version from https://github.com/jas-williams/CubeCell-Helium-Mapper.git
  */
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
@@ -210,8 +210,8 @@ enum eMenuEntries
   TRACKER_MODE,
   NONSTOP_MODE,
   DEBUG_INFO
-  //RESET_GPS,
-  //BAT_V_PCT
+  // RESET_GPS,
+  // BAT_V_PCT
 };
 
 void userKey();
@@ -358,13 +358,13 @@ void displayBatteryLevel()
 
   if (displayBatPct)
   {
-    //get Battery Level 1-254 Returned by BoardGetBatteryLevel
+    // get Battery Level 1-254 Returned by BoardGetBatteryLevel
     /*                                0: USB,
-    *                                 1: Min level,
-    *                                 x: level
-    *                               254: fully charged,
-    *                               255: Error
-    */
+     *                                 1: Min level,
+     *                                 x: level
+     *                               254: fully charged,
+     *                               255: Error
+     */
     batteryLevel = BoardGetBatteryLevel();
     batteryLevelPct = ((float_t)batteryLevel - BAT_LEVEL_EMPTY) * 100 / (BAT_LEVEL_FULL - BAT_LEVEL_EMPTY);
     switch (batteryLevel)
@@ -584,7 +584,7 @@ void startGPS()
   GPS.begin(115200); // If you are sure that you have selected the right include directive for your GPS chip, you can use GPS.begin(115200) here.
 // Air530Z code has setmode(MODE_GPS_BEIDOU_GLONASS) call in begin(), but for Air530 we will need to set it ourselves
 #ifdef GPS_Air530_H
-  GPS.setmode(MODE_GPS_GLONASS); //Enable dual mode - GLONASS and GPS
+  GPS.setmode(MODE_GPS_GLONASS); // Enable dual mode - GLONASS and GPS
 #endif
   GPS.setNMEA(NMEA_RMC | NMEA_GGA); // decrease the amount of unnecessary of data the GPS sends, NMEA_RMC has most of what we need, except altitude, NMEA_GGA has altitude but does not have date and speed
   gpsSearchStart = millis();
@@ -723,7 +723,7 @@ void switchModeOutOfSleep()
 void switchScrenOffMode()
 {
   screenOffMode = true;
-  //displayLogoAndMsg("Scren off....", 2000);
+  // displayLogoAndMsg("Scren off....", 2000);
   VextOFF();
   display.stop();
   isDispayOn = 0;
@@ -855,9 +855,9 @@ bool prepareTxFrame(uint8_t port)
       Serial.print(speed);
       Serial.println(" kph");
 
-      //get Battery Level 1-254 Returned by BoardGetBatteryLevel
+      // get Battery Level 1-254 Returned by BoardGetBatteryLevel
       uint8_t batteryLevel = BoardGetBatteryLevel();
-      //Convert to %
+      // Convert to %
       batteryLevel = (uint8_t)((float_t)batteryLevel - BAT_LEVEL_EMPTY) * 100 / (BAT_LEVEL_FULL - BAT_LEVEL_EMPTY);
 
       Serial.print("Battery Level ");
@@ -941,7 +941,7 @@ void setVibrAutoWakeUp()
 
 // Except if we have VIBR_WAKE_FROM_SLEEP enabled, in which case we need to attach in sleep mode
 #ifdef VIBR_WAKE_FROM_SLEEP
-      // But if MENU_SLEEP_DISABLE_VIBR_WAKEUP enabled, only if sleep was not activated from the menu
+                          // But if MENU_SLEEP_DISABLE_VIBR_WAKEUP enabled, only if sleep was not activated from the menu
 #ifdef MENU_SLEEP_DISABLE_VIBR_WAKEUP
   if (!sleepActivatedFromMenu)
 #endif
@@ -1161,17 +1161,17 @@ void setup()
 
   deviceState = DEVICE_STATE_INIT;
 
-  /* This will switch deviceState to DEVICE_STATE_SLEEP and schedule a SEND timer which will 
+  /* This will switch deviceState to DEVICE_STATE_SLEEP and schedule a SEND timer which will
     switch to DEVICE_STATE_SEND if saved network info exists and no new JOIN is necessary */
-  LoRaWAN.ifskipjoin();
+  // LoRaWAN.ifskipjoin();  // Disable ifskipjoin as it is causing issues on latest batch of mappers.
 
   if (deviceState != DEVICE_STATE_INIT)
   {
-    /* This messes up with LoRaWAN.init() so it can't be called before it, 
+    /* This messes up with LoRaWAN.init() so it can't be called before it,
       but if we are not going to call LoRaWAN.init(), then we have to do it here. */
     startGPS();
   }
-  //Setup user button - this must be after LoRaWAN.ifskipjoin(), because the button is used there to cancel stored settings load and initiate a new join
+  // Setup user button - this must be after LoRaWAN.ifskipjoin(), because the button is used there to cancel stored settings load and initiate a new join
   pinMode(USER_KEY, INPUT);
   attachInterrupt(USER_KEY, userKey, FALLING);
 
@@ -1229,7 +1229,7 @@ void loop()
       if (!loopingInSend) // We are just getting here from some other state
       {
         loopingInSend = true; // We may be staying here for a while, but we want to reset the below variables only once when we enter.
-        /* Reset both these variables. The goal is to skip the first unnecessary display of the GPS Fix Wait screen 
+        /* Reset both these variables. The goal is to skip the first unnecessary display of the GPS Fix Wait screen
             and only show it if there was more than 1s without GPS fix and correctly display the time passed on it */
         gpsSearchStart = lastScreenPrint = millis();
       }
